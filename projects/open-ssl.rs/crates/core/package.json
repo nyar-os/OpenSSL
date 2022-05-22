@@ -1,0 +1,7 @@
+{
+    "name": "@wae/open-ssl-core",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Rust domain model for OpenSSL: capability states, error codes, and audit vocabulary",
+    "license": "Apache-2.0"
+}

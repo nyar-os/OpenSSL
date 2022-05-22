@@ -1,0 +1,36 @@
+{
+    "cli": {
+        "intro": "open-ssl — 证书生成与管理。面向 agent 与人类的非交互 CLI。",
+        "cmd": {
+            "capabilities": "列出领域能力及其可用状态",
+            "version": "打印原生插件版本",
+            "audit": "读取当前调用者的审计记录",
+            "gui": "打开 VMZ GUI 窗口并泵送宿主事件直到窗口关闭",
+            "certificate-inspect": "解析并展示 X.509 证书",
+            "certificate-issue": "由 CA 签发证书",
+            "certificate-renew": "按幂等策略续期证书",
+            "certificate-revoke": "吊销证书并发布 CRL",
+            "ca-create": "创建或更新根 CA 与中间 CA",
+            "csr-create": "构造并校验证书签名请求",
+            "private-key-store": "生成、保护、导入或导出私钥",
+            "certificate-store": "枚举或管理本地证书存储",
+            "remote-agent": "纳管远程计算机上的证书",
+            "host-install": "安装宿主集成与桌面入口",
+            "host-uninstall": "移除宿主集成并清理残留状态"
+        },
+        "opt": {
+            "actor": "审计调用者 id（用户或 agent 名称）",
+            "actor-kind": "审计调用者类型",
+            "actor-source": "审计调用者来源（cli、plugin、gui 等）",
+            "json": "在 stdout 输出机器可读 JSON",
+            "dry-run": "只做计划，不改动宿主状态",
+            "kind": "按调用者类型过滤审计记录",
+            "id": "按调用者 id 过滤审计记录",
+            "capability": "按能力 id 过滤审计记录",
+            "from-ms": "按 Unix 毫秒时间戳过滤审计记录的起点",
+            "to-ms": "按 Unix 毫秒时间戳过滤审计记录的终点",
+            "limit": "审计记录的最大数量",
+            "content-dir": "已暂存 GUI 构建的目录"
+        }
+    }
+}

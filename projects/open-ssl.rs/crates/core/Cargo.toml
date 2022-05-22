@@ -1,0 +1,33 @@
+[package]
+name = "open-ssl-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OpenSSL domain model, capability states, and audit vocabulary"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Cryptographic primitives only. DER, X.509, CSR, TLS, HTTP, and ACME protocol
+# and format handling are implemented in this repository (see the product
+# architecture ruling on internalized OpenX capabilities).
+sha2 = { workspace = true }
+p256 = { workspace = true }
+p384 = { workspace = true }
+rsa = { workspace = true }
+signature = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+hkdf = { workspace = true }
+x25519-dalek = { workspace = true }
+
+[dev-dependencies]
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+x25519-dalek = { workspace = true }
