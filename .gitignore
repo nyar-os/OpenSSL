@@ -1,14 +1,10 @@
-# OS
-.DS_Store/
-thumbs.db
-time-travel.*
-
-# IDE
-.vscode/
-.vs/
-.idea/
-*.iml
-
-# Rust
+node_modules/
 target/
-Cargo.lock
+dist/
+*.node
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+projects/open-ssl.ts/packages/open-ssl-ui/.cache/

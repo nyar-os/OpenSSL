@@ -1,0 +1,243 @@
+<template>
+    <div class="app-root" data-app="open-ssl">
+        <aside class="app-rail" aria-label="Navigation">
+            <div class="app-brand">
+                <div class="app-brand__name">
+                    OpenSSL
+                </div>
+                <div class="app-brand__lead">
+                    {{ lead }}
+                </div>
+            </div>
+
+            <nav class="app-nav">
+                <div class="app-nav__label">
+                    {{ navLabel }}
+                </div>
+                <div v-for="entry in nav" :key="entry.id" class="app-nav__item">
+                    <span>{{ entry.name }}</span>
+                </div>
+            </nav>
+
+            <div class="app-rail__foot">
+                <Button type="button" variant="secondary" @click="closeWindow">
+                    {{ closeLabel }}
+                </Button>
+            </div>
+        </aside>
+
+        <main class="app-content">
+            <div class="app-head">
+                <h1>
+                    {{ title }}
+                </h1>
+                <p>{{ lead }}</p>
+            </div>
+
+            <div class="app-actions">
+                <Button type="button" :loading="loadingCapabilities" :disabled="loadingCapabilities" @click="loadCapabilities">
+                    {{ capabilitiesLabel }}
+                </Button>
+            </div>
+
+            <Alert v-if="error" tone="danger" roleName="alert" :title="errorTitle" :description="error" />
+            <Alert v-else-if="status" tone="info" roleName="status" :title="statusTitle" :description="status" />
+
+            <Empty v-if="!capabilityRows.length && !loadingCapabilities" :title="emptyTitle" :description="emptyDesc" />
+            <Table v-else :columns="capabilityColumns" :rows="capabilityRows" :hasRowAction="false" />
+
+            <p class="app-note">
+                {{ note }}
+            </p>
+        </main>
+    </div>
+</template>
+
+<style>
+.app-root {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+.app-rail {
+    display: flex;
+    flex: 0 0 15rem;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 0;
+    padding: 1rem;
+    overflow-y: auto;
+    border-right: 1px solid var(--vmz-line-default, #e5e6eb);
+    background: var(--vmz-surface-mist, var(--vmz-surface-paper, #f7f8fa));
+}
+.app-brand__name {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+.app-brand__lead {
+    margin-top: 0.35rem;
+    color: var(--vmz-text-steel, #8b93a7);
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+.app-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.app-nav__label {
+    color: var(--vmz-text-steel, #8b93a7);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.app-nav__item {
+    font-size: 0.85rem;
+}
+.app-rail__foot {
+    margin-top: auto;
+}
+.app-content {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+    padding: 1rem;
+    overflow-y: auto;
+}
+.app-head h1 {
+    margin: 0 0 0.35rem;
+    font-size: 1.35rem;
+}
+.app-head p {
+    margin: 0;
+    color: var(--vmz-text-steel, #8b93a7);
+}
+.app-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.app-note {
+    margin: 0;
+    color: var(--vmz-text-steel, #8b93a7);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+</style>
+
+<script client>
+/**
+ * Application page.
+ *
+ * The page renders the capability table. Inspection and issuance stay separate
+ * rows so a read can never be mistaken for a write. All decisions live in the
+ * Rust `core` and `napi` crates.
+ */
+export default class IndexPage {
+    title = "Capability table";
+    lead = "Certificate generation and management.";
+    navLabel = "Workspace";
+    closeLabel = "Close";
+    capabilitiesLabel = "Refresh capabilities";
+    errorTitle = "Request failed";
+    statusTitle = "Status";
+    emptyTitle = "No capability report yet";
+    emptyDesc = "Refresh to read the capability table.";
+    note = "Inspection and issuance are separate capabilities. Private key export is an explicit high-risk action, and remote management requires the first-party agent channel.";
+    status = "";
+    error = "";
+    loadingCapabilities = false;
+    nav = [
+        { id: "certificates", name: "Certificates" },
+        { id: "authorities", name: "Authorities" },
+        { id: "store", name: "Store" },
+        { id: "remote", name: "Remote" },
+    ];
+    capabilityColumns = [
+        { id: "id", title: "Capability" },
+        { id: "state", title: "Status" },
+        { id: "reason", title: "Reason" },
+    ];
+    capabilityRows = [];
+
+    onMount() {
+        this.installHostBridge();
+        const bridge = globalThis.chrome && globalThis.chrome.webview;
+        if (bridge && bridge.postMessage) this.loadCapabilities();
+    }
+
+    installHostBridge() {
+        const handler = (event) => {
+            let data = event && typeof event === "object" && "data" in event ? event.data : event;
+            if (typeof data === "string") {
+                try {
+                    data = JSON.parse(data);
+                } catch {
+                    return;
+                }
+            }
+            this.handleReply(data);
+        };
+        const bridge = globalThis.chrome && globalThis.chrome.webview;
+        if (bridge && bridge.addEventListener) bridge.addEventListener("message", handler);
+        globalThis.__waeReceive = (text) => {
+            try {
+                handler(JSON.parse(text));
+            } catch {
+                // Ignore malformed host messages.
+            }
+        };
+    }
+
+    post(message) {
+        const payload = JSON.stringify(message);
+        const win = globalThis.chrome && globalThis.chrome.webview;
+        if (win && win.postMessage) {
+            win.postMessage(payload);
+            return true;
+        }
+        const webkit = globalThis.webkit && globalThis.webkit.messageHandlers;
+        if (webkit && webkit.wae) {
+            webkit.wae.postMessage(payload);
+            return true;
+        }
+        this.error = "Native bridge unavailable (open this page through the host).";
+        return false;
+    }
+
+    handleReply(data) {
+        if (!data || typeof data !== "object") return;
+        if (data.ok !== true) {
+            this.loadingCapabilities = false;
+            const failure = data.error;
+            this.error = typeof failure === "string" ? failure : String((failure && failure.message) || "unknown error");
+            this.status = "";
+            return;
+        }
+        const value = data.data || {};
+        if (!Array.isArray(value.items)) {
+            this.loadingCapabilities = false;
+            return;
+        }
+        this.loadingCapabilities = false;
+        this.error = "";
+        this.status = "Capability table updated.";
+        this.capabilityRows = value.items.map((item, index) => ({
+            id: String(index),
+            cells: [String(item.id || ""), String(item.state || "supported"), String(item.reason || "")],
+        }));
+    }
+
+    loadCapabilities() {
+        this.loadingCapabilities = true;
+        this.error = "";
+        if (!this.post({ type: "capabilities" })) this.loadingCapabilities = false;
+    }
+
+    closeWindow() {
+        this.post({ type: "close" });
+    }
+}
+</script>

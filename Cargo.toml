@@ -1,11 +1,30 @@
 [workspace]
-members = ["projects/*"]
+resolver = "2"
+members = [
+    "projects/open-ssl.rs/crates/core",
+    "projects/open-ssl.rs/crates/napi",
+    "projects/open-ssl.rs/crates/cli",
+]
 default-members = [
-    "projects/sub_projects",
+    "projects/open-ssl.rs/crates/core",
+    "projects/open-ssl.rs/crates/napi",
+    "projects/open-ssl.rs/crates/cli",
 ]
-exclude = [
-    "projects/.DS_Store",
-]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+authors = ["OpenSSL Authors"]
+repository = "https://github.com/nyar-os/OpenSSL"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wae = { git = "https://github.com/doki-land/wae-framework.git", rev = "ae0db25961a72a2abc51a24b097f4363093c5394" }
+open-ssl-core = { path = "projects/open-ssl.rs/crates/core", version = "0.0.0" }
+open-ssl-cli = { path = "projects/open-ssl.rs/crates/cli", version = "0.0.0" }
 
 [profile.release]
 lto = true

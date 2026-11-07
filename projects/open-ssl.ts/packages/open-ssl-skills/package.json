@@ -1,0 +1,12 @@
+{
+    "name": "@wae/open-ssl-skills",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Agent skills for OpenSSL",
+    "files": [
+        "skills",
+        "Readme.md"
+    ],
+    "license": "Apache-2.0"
+}

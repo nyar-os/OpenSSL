@@ -1,0 +1,21 @@
+[package]
+name = "open-ssl-napi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Platform-neutral N-API surface for OpenSSL"
+publish = false
+
+[lib]
+name = "open_ssl_napi"
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+wae = { workspace = true }
+open-ssl-core = { workspace = true }
+open-ssl-cli = { workspace = true }

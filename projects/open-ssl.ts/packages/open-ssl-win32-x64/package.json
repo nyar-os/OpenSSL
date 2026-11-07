@@ -1,0 +1,17 @@
+{
+    "name": "@wae/open-ssl-win32-x64",
+    "version": "0.0.0",
+    "description": "Native addon for OpenSSL on Windows x64",
+    "os": [
+        "win32"
+    ],
+    "cpu": [
+        "x64"
+    ],
+    "main": "open-ssl.win32-x64.node",
+    "files": [
+        "open-ssl.win32-x64.node",
+        "Readme.md"
+    ],
+    "license": "Apache-2.0"
+}
