@@ -19,7 +19,7 @@
         "gui": "wae build && pnpm --filter @wae/open-ssl-cli exec node ./dist/cli.js gui"
     },
     "devDependencies": {
-        "@wae/wae": "0.0.5",
+        "@wae/wae": "0.0.6",
         "@types/node": "^22.20.4",
         "typescript": "^5.9.2"
     }

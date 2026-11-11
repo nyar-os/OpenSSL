@@ -20,7 +20,7 @@
         "build": "tsc -p tsconfig.json"
     },
     "dependencies": {
-        "@wae/commander": "0.0.5",
+        "@wae/commander": "0.0.6",
         "@wae/open-ssl": "workspace:*"
     },
     "devDependencies": {
