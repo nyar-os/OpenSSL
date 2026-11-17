@@ -52,6 +52,12 @@ pub enum ErrorCode {
     InvalidArgument,
     /// An I/O operation failed.
     Io,
+    /// The network transport failed or refused the request.
+    Network,
+    /// A remote peer or document violated the protocol contract.
+    Protocol,
+    /// The host, provider, or server denied the operation.
+    Denied,
     /// An internal invariant failed.
     Internal,
 }
@@ -65,6 +71,9 @@ impl ErrorCode {
             Self::DependencyBlocked => "dependency_blocked",
             Self::InvalidArgument => "invalid_argument",
             Self::Io => "io_error",
+            Self::Network => "network_error",
+            Self::Protocol => "protocol_error",
+            Self::Denied => "denied",
             Self::Internal => "internal_error",
         }
     }

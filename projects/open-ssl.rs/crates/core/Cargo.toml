@@ -12,6 +12,9 @@ publish = false
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# HTTP transport is owned by the family: ACME and DNS provider adapters send
+# through `boost.net::http` and never build their own client.
+boost-net = { workspace = true }
 # Cryptographic primitives only. DER, X.509, CSR, TLS, HTTP, and ACME protocol
 # and format handling are implemented in this repository (see the product
 # architecture ruling on internalized OpenX capabilities).

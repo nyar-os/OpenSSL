@@ -2,6 +2,8 @@
 #![warn(missing_docs, rustdoc::missing_crate_level_docs)]
 #![doc = include_str!("../readme.md")]
 
+/// RFC 8555 ACME automation over the family HTTP transport.
+pub mod acme;
 /// Stable capability ids and the audit summary vocabulary.
 pub mod audit;
 /// Product-owned PKCS#10 certificate signing requests.

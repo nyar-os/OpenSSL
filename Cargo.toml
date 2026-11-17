@@ -34,6 +34,10 @@ hmac = "0.12"
 hkdf = "0.12"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 wae = { git = "https://github.com/doki-land/wae-framework.git", rev = "ae0db25961a72a2abc51a24b097f4363093c5394" }
+# HTTP transport ownership is the family ruling: ACME and provider APIs consume
+# `boost.net::http`. `std` only — the plaintext loopback slice must not pull any
+# TLS backend; HTTPS consumers wait for the Boost `boost.net::tls` acceptance gate.
+boost-net = { git = "https://github.com/oovm/rust-boost", rev = "29cef9abde7072ea6fbb08470f81eb7eed966e95", default-features = false, features = ["std"] }
 open-ssl-core = { path = "projects/open-ssl.rs/crates/core", version = "0.0.0" }
 
 [profile.release]
