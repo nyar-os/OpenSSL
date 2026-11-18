@@ -370,7 +370,8 @@ impl StateStore {
 }
 
 /// 一次签发在本地能确定的信息，不包含任何凭证值。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IssuePlan {
     /// 规范化后的项目根。
     pub project_root: PathBuf,

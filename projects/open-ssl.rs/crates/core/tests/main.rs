@@ -20,6 +20,12 @@ const DOMAIN: [&str; 11] = [
 
 const META: [&str; 4] = [capability_ids::CAPABILITIES, capability_ids::VERSION, capability_ids::AUDIT_QUERY, capability_ids::AUDIT_CONFIGURE];
 
+/// Domain rows that are available today.
+const AVAILABLE_DOMAIN: [&str; 1] = [capability_ids::ACME_PLAN];
+
+/// Domain rows that stay unavailable for a reason other than the skeleton round.
+const BLOCKED_DOMAIN: [&str; 1] = [capability_ids::ACME_ISSUE];
+
 #[test]
 fn every_domain_capability_is_registered_as_not_implemented() {
     let report = capabilities();
@@ -66,6 +72,26 @@ fn meta_capabilities_are_available() {
 }
 
 #[test]
+fn the_plan_row_is_available_and_issuance_names_the_missing_transport() {
+    let report = capabilities();
+    for id in AVAILABLE_DOMAIN {
+        let item = report.get(id).unwrap_or_else(|| panic!("missing capability row: {id}"));
+        assert!(item.is_available(), "{id} must report as available");
+        assert_eq!(item.state, None);
+        assert_eq!(item.code, None);
+        assert!(!item.detail.is_empty(), "{id} must describe what it does");
+        assert!(item.detail.contains("local"), "{id} must stay local-only in its detail");
+    }
+    for id in BLOCKED_DOMAIN {
+        let item = report.get(id).unwrap_or_else(|| panic!("missing capability row: {id}"));
+        assert_eq!(item.state, Some(CapabilityState::NotImplemented), "{id} must stay unavailable");
+        assert_eq!(item.code, Some("not_implemented"));
+        assert!(item.reason.contains("HTTPS"), "{id} must name the missing transport: {}", item.reason);
+        assert!(!item.detail.is_empty());
+    }
+}
+
+#[test]
 fn capability_ids_are_unique() {
     let report = capabilities();
     let mut seen = Vec::with_capacity(report.items.len());
@@ -74,8 +100,9 @@ fn capability_ids_are_unique() {
         seen.push(item.id);
     }
     assert_eq!(report.app, "open-ssl");
-    assert_eq!(report.items.len(), DOMAIN.len() + META.len());
+    assert_eq!(report.items.len(), DOMAIN.len() + META.len() + AVAILABLE_DOMAIN.len() + BLOCKED_DOMAIN.len());
     assert!(report.notes.iter().any(|note| note.contains("no capability may fall back") || note.contains("No capability may fall back")));
+    assert!(report.notes.iter().any(|note| note.contains(capability_ids::ACME_PLAN)), "notes must state the real available range");
 }
 
 #[test]

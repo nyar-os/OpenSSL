@@ -5,9 +5,10 @@
 //! capabilities arrive as structured upstream errors. Audit is wrapped at every
 //! capability boundary through the shared `wae.audit/v0` facility.
 //!
-//! The skeleton round registers the full capability table but implements no
-//! domain behaviour. Every domain command resolves to `not_implemented` with a
-//! stable code instead of fabricating a result.
+//! The skeleton round registers the full capability table. `acme-plan` is the
+//! only implemented domain capability and stays local-only, while `acme-issue`
+//! reports the missing HTTPS transport instead of fabricating an issuance. Every
+//! other domain command resolves to `not_implemented` with a stable code.
 
 #![deny(missing_docs)]
 
@@ -16,8 +17,12 @@ use std::{cell::RefCell, env, path::PathBuf};
 use open_ssl_core::{
     CapabilityState, Error as CoreError, ErrorCode,
     audit::capability_ids,
+    dns::credentials::ProjectRoot,
+    issue::{IssueRequest, IssueSession, begin_issue},
     platform::{CapabilityItem, capabilities as core_capabilities, platform as core_platform},
+    state::{DirectoryKind, IssuePlan, plan_issue},
 };
+use serde::Serialize;
 use serde_json::{Value, json};
 use wae::{
     CallContext, Error, JsValue, Result, function, optional_string_prop, register_module,
@@ -122,8 +127,8 @@ fn capability_report() -> open_ssl_core::platform::CapabilitiesReport {
 
 /// Resolve a domain capability to its structured refusal.
 ///
-/// Meta capabilities keep dedicated exports, unknown ids are caller errors,
-/// and every registered domain capability is still `not_implemented`.
+/// Available capabilities keep dedicated exports, unknown ids are caller errors,
+/// and the remaining registered domain capabilities are still `not_implemented`.
 fn invoke_error(capability: &str) -> CoreError {
     let report = core_capabilities();
     let Some(item) = report.get(capability)
@@ -131,7 +136,7 @@ fn invoke_error(capability: &str) -> CoreError {
         return CoreError::new(ErrorCode::InvalidArgument, format!("unknown capability `{capability}`"));
     };
     if item.is_available() {
-        return CoreError::new(ErrorCode::InvalidArgument, format!("`{capability}` is a meta capability with a dedicated export"));
+        return CoreError::new(ErrorCode::InvalidArgument, format!("`{capability}` has a dedicated export, use it instead of `invoke`"));
     }
     CoreError::unavailable(item.state.unwrap_or(CapabilityState::NotImplemented), item.id, item.reason)
 }
@@ -372,7 +377,228 @@ fn audit_query(ctx: CallContext) -> Result<JsValue> {
     }
 }
 
-register_module![version, capabilities, invoke, open_gui, pump_events, close_gui, is_gui_open, configure_audit, audit_query];
+/// Decoded options shared by `acmePlan` and `acmeIssue`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueArguments {
+    /// Project root that owns `.secrets/open-ssl.json`. `None` uses the process working directory.
+    pub project_root: Option<PathBuf>,
+    /// ACME directory the request targets.
+    pub kind: DirectoryKind,
+    /// DNS provider id whose token the project secrets file must carry.
+    pub dns_provider: String,
+    /// Identifiers requested from the CA.
+    pub identifiers: Vec<String>,
+}
+
+/// Report returned by `acmeIssue`.
+///
+/// A dry run carries the plan and a real run carries the session. `blocked` inside
+/// the session is what tells the caller this build cannot reach a CA yet.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueOutcome {
+    /// Whether the call ran as a local-only plan.
+    pub dry_run: bool,
+    /// Plan produced by a dry run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<IssuePlan>,
+    /// Session produced by a non-dry run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<IssueSession>,
+}
+
+/// Run the local-only plan behind `acmePlan`.
+///
+/// Only project state and the availability of the provider token are read. It
+/// never returns a token, writes a file, or touches DNS.
+pub fn run_acme_plan(arguments: &IssueArguments) -> open_ssl_core::Result<IssuePlan> {
+    let project = resolve_project(arguments)?;
+    plan_issue(&project, arguments.kind, &arguments.dns_provider, &arguments.identifiers)
+}
+
+/// Run `acmeIssue`.
+///
+/// A dry run is exactly [`run_acme_plan`]: no lock, no state, no DNS, no key. A
+/// real run takes the project lock through `begin_issue` and releases it before
+/// the report leaves the boundary, because the author surface keeps no handle.
+pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
+    if dry_run {
+        let plan = run_acme_plan(arguments)?;
+        return Ok(IssueOutcome { dry_run: true, plan: Some(plan), session: None });
+    }
+    let project = resolve_project(arguments)?;
+    let request = IssueRequest { kind: arguments.kind, dns_provider: &arguments.dns_provider, identifiers: &arguments.identifiers };
+    let (lock, session) = begin_issue(&project, request)?;
+    drop(lock);
+    Ok(IssueOutcome { dry_run: false, plan: None, session: Some(session) })
+}
+
+fn resolve_project(arguments: &IssueArguments) -> open_ssl_core::Result<ProjectRoot> {
+    match &arguments.project_root {
+        Some(path) => ProjectRoot::new(path),
+        None => ProjectRoot::from_current_dir(),
+    }
+}
+
+fn invalid_argument(message: impl Into<String>) -> CoreError {
+    CoreError::new(ErrorCode::InvalidArgument, message)
+}
+
+fn napi_error(error: Error) -> CoreError {
+    CoreError::new(ErrorCode::Internal, error.to_string())
+}
+
+fn issue_object(arg: Option<JsValue>, capability: &str) -> std::result::Result<JsValue, CoreError> {
+    let object = arg.ok_or_else(|| invalid_argument(format!("`{capability}` requires an options object")))?;
+    if object.type_of().map_err(napi_error)? != wae::sys::napi_object {
+        return Err(invalid_argument(format!("`{capability}` options must be an object")));
+    }
+    Ok(object)
+}
+
+fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreError> {
+    let project_root = optional_project_root(object)?;
+    let kind = directory_kind(&required_string(object, "kind")?)?;
+    let dns_provider = required_string(object, "dnsProvider")?;
+    let identifiers = string_array(object, "identifiers")?;
+    Ok(IssueArguments { project_root, kind, dns_provider, identifiers })
+}
+
+/// `projectRoot` may be omitted, but a present value must be a usable string:
+/// a malformed value never falls back to the working directory silently.
+fn optional_project_root(object: JsValue) -> std::result::Result<Option<PathBuf>, CoreError> {
+    let value = object.get_named("projectRoot").map_err(napi_error)?;
+    if value.is_undefined().map_err(napi_error)? {
+        return Ok(None);
+    }
+    if value.type_of().map_err(napi_error)? != wae::sys::napi_string {
+        return Err(invalid_argument("`projectRoot` must be a string"));
+    }
+    let path = value.as_string().map_err(napi_error)?;
+    if path.trim().is_empty() {
+        return Err(invalid_argument("`projectRoot` must not be empty"));
+    }
+    Ok(Some(PathBuf::from(path)))
+}
+
+fn directory_kind(value: &str) -> std::result::Result<DirectoryKind, CoreError> {
+    match value.trim() {
+        "staging" => Ok(DirectoryKind::Staging),
+        "production" => Ok(DirectoryKind::Production),
+        other => Err(invalid_argument(format!("`kind` must be `staging` or `production`, not `{other}`"))),
+    }
+}
+
+fn required_string(object: JsValue, name: &str) -> std::result::Result<String, CoreError> {
+    let value = object.get_named(name).map_err(napi_error)?;
+    if value.type_of().map_err(napi_error)? != wae::sys::napi_string {
+        return Err(invalid_argument(format!("`{name}` must be a string")));
+    }
+    let text = value.as_string().map_err(napi_error)?;
+    if text.trim().is_empty() {
+        return Err(invalid_argument(format!("`{name}` must not be empty")));
+    }
+    Ok(text)
+}
+
+fn required_bool(object: JsValue, name: &str) -> std::result::Result<bool, CoreError> {
+    let value = object.get_named(name).map_err(napi_error)?;
+    if value.type_of().map_err(napi_error)? != wae::sys::napi_boolean {
+        return Err(invalid_argument(format!("`{name}` must be a boolean")));
+    }
+    value.as_bool().map_err(napi_error)
+}
+
+/// Read a string array through property lookup, because the N-API value helpers
+/// expose element writes but no element reads.
+fn string_array(object: JsValue, name: &str) -> std::result::Result<Vec<String>, CoreError> {
+    let not_an_array = || invalid_argument(format!("`{name}` must be an array of strings"));
+    let value = object.get_named(name).map_err(napi_error)?;
+    if value.type_of().map_err(napi_error)? != wae::sys::napi_object {
+        return Err(not_an_array());
+    }
+    let length = value.get_named("length").and_then(JsValue::as_i64).map_err(|_| not_an_array())?;
+    let mut items = Vec::new();
+    for index in 0..length {
+        let item = value.get_named(&index.to_string()).map_err(napi_error)?;
+        if item.type_of().map_err(napi_error)? != wae::sys::napi_string {
+            return Err(not_an_array());
+        }
+        items.push(item.as_string().map_err(napi_error)?);
+    }
+    Ok(items)
+}
+
+fn issue_params(arguments: &IssueArguments, dry_run: Option<bool>) -> Value {
+    let mut params = json!({
+        "kind": arguments.kind.as_str(),
+        "dnsProvider": &arguments.dns_provider,
+        "identifiers": &arguments.identifiers,
+    });
+    if let (Some(dry_run), Some(object)) = (dry_run, params.as_object_mut()) {
+        object.insert("dryRun".to_owned(), Value::Bool(dry_run));
+    }
+    params
+}
+
+/// Target summary: identifiers, directory, and provider only. No token and no path.
+fn plan_summary(arguments: &IssueArguments) -> String {
+    format!("{} identifier(s) against the {} directory via {}", arguments.identifiers.len(), arguments.kind.as_str(), arguments.dns_provider)
+}
+
+fn issue_summary(arguments: &IssueArguments, outcome: &IssueOutcome) -> String {
+    let base = plan_summary(arguments);
+    match &outcome.session {
+        Some(session) => match session.blocked {
+            Some(reason) => format!("{base}: stage {}, blocked because {reason}", session.stage.as_str()),
+            None => format!("{base}: stage {}", session.stage.as_str()),
+        },
+        None => format!("{base}: dry run"),
+    }
+}
+
+#[function(js_name = "acmePlan")]
+fn acme_plan(ctx: CallContext) -> Result<JsValue> {
+    let object = issue_object(object_arg(&ctx)?, "acmePlan").map_err(core_error)?;
+    let arguments = issue_arguments(object).map_err(core_error)?;
+    let params = issue_params(&arguments, None);
+    let plan = audit::run(capability_ids::ACME_PLAN, Mode::DryRun, params, || {
+        let plan = run_acme_plan(&arguments)?;
+        Ok((plan, Summary::new(arguments.identifiers.len() as u64, plan_summary(&arguments))))
+    })
+    .map_err(core_error)?;
+    value_to_js(&ctx, &plan)
+}
+
+#[function(js_name = "acmeIssue")]
+fn acme_issue(ctx: CallContext) -> Result<JsValue> {
+    let object = issue_object(object_arg(&ctx)?, "acmeIssue").map_err(core_error)?;
+    let arguments = issue_arguments(object).map_err(core_error)?;
+    let dry_run = required_bool(object, "dryRun").map_err(core_error)?;
+    let mode = if dry_run { Mode::DryRun } else { Mode::Execute };
+    let params = issue_params(&arguments, Some(dry_run));
+    let outcome = audit::run(capability_ids::ACME_ISSUE, mode, params, || {
+        let outcome = run_acme_issue(&arguments, dry_run)?;
+        let summary = Summary::new(arguments.identifiers.len() as u64, issue_summary(&arguments, &outcome));
+        Ok((outcome, summary))
+    })
+    .map_err(core_error)?;
+    value_to_js(&ctx, &outcome)
+}
+
+register_module![
+    version,
+    capabilities,
+    invoke,
+    open_gui,
+    pump_events,
+    close_gui,
+    is_gui_open,
+    configure_audit,
+    audit_query,
+    acme_plan,
+    acme_issue
+];
 
 #[cfg(test)]
 mod tests {

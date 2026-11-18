@@ -13,6 +13,11 @@ pub mod capability_ids {
     /// Host the WebView GUI.
     pub const GUI: &str = "gui";
 
+    /// Plan a certificate issuance from local project state only.
+    pub const ACME_PLAN: &str = "acme-plan";
+    /// Drive the ACME issuance state machine.
+    pub const ACME_ISSUE: &str = "acme-issue";
+
     /// Parse and display an X.509 certificate.
     pub const CERTIFICATE_INSPECT: &str = "certificate-inspect";
     /// Issue a certificate from a CA.

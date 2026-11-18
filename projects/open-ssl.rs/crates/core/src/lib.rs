@@ -16,6 +16,8 @@ pub mod der;
 pub mod dns;
 /// Capability states, stable error codes, and the structured error type.
 pub mod errors;
+/// 签发编排：项目锁、纯本地计划与可恢复的签发会话。
+pub mod issue;
 /// 项目级签发锁：同一访问根下只允许一个签发流程。
 pub mod lock;
 /// Host platform descriptor and the capability report.

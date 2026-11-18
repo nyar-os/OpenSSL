@@ -11,7 +11,9 @@ publish = false
 
 [lib]
 name = "open_ssl_napi"
-crate-type = ["cdylib"]
+# `rlib` exists so the integration tests can call the pure capability helpers.
+# Node still loads the `cdylib` addon.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 serde = { workspace = true }
