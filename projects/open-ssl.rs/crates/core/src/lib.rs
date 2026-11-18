@@ -14,6 +14,10 @@ pub mod delivery;
 pub mod der;
 /// DNS-01 record placement, provider adapters, and project-scoped credentials.
 pub mod dns;
+/// 真实签发编排：账户、订单、DNS、挑战、CSR、下载与交付。
+pub mod flow;
+/// 账户密钥与叶子私钥的项目级持久化。
+pub mod keys;
 /// Capability states, stable error codes, and the structured error type.
 pub mod errors;
 /// 签发编排：项目锁、纯本地计划与可恢复的签发会话。

@@ -221,6 +221,12 @@ impl<T: Transport> AcmeClient<T> {
         self.account_url.as_deref()
     }
 
+    /// Bind an account URL loaded from project state so a restart can reuse the
+    /// same ACME account instead of creating a second one.
+    pub fn bind_account(&mut self, url: impl Into<String>) {
+        self.account_url = Some(url.into());
+    }
+
     /// Create (or idempotently retrieve) the account, binding the client to its URL.
     pub fn new_account(&mut self, contact: &[String], agree_terms: bool) -> Result<Account> {
         let mut payload = Map::new();
