@@ -10,9 +10,11 @@
 mod error;
 mod kx;
 mod record;
+mod transport;
 
 pub use error::{TlsError, TlsResult};
 pub use record::Wire;
+pub use transport::HttpsTransport;
 
 use std::{
     net::{TcpStream, ToSocketAddrs},
