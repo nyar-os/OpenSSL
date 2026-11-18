@@ -11,10 +11,13 @@ This crate owns the shared vocabulary that every consumer uses:
 - the redacted audit fields written to `wae.audit/v0`
 - the host platform descriptor
 
-It contains no platform `cfg` branches, no I/O, no process spawning, and no
-protocol implementation. The skeleton round registers every domain capability
-as `not_implemented` with a stable code so no caller can mistake an unimplemented
-path for a successful one.
+It contains no platform `cfg` branches and no process spawning. The only filesystem
+access is the project-scoped secrets loader in `dns::credentials`; every network request
+travels through the family transport, and protocol handling lives in the `acme`, `dns`,
+`der`, `tls`, and `x509` modules.
+
+The skeleton round registers every domain capability as `not_implemented` with a
+stable code so no caller can mistake an unimplemented path for a successful one.
 
 ## Capability states
 

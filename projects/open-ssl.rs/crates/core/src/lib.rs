@@ -10,6 +10,8 @@ pub mod audit;
 pub mod csr;
 /// Product-owned ASN.1 DER codec.
 pub mod der;
+/// DNS-01 record placement, provider adapters, and project-scoped credentials.
+pub mod dns;
 /// Capability states, stable error codes, and the structured error type.
 pub mod errors;
 /// Host platform descriptor and the capability report.
