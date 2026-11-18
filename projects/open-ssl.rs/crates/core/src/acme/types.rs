@@ -91,6 +91,10 @@ pub enum AuthorizationStatus {
     Invalid,
     /// The authorization was deactivated.
     Deactivated,
+    /// The authorization expired before validation finished.
+    Expired,
+    /// The authorization was revoked by the server.
+    Revoked,
 }
 
 impl AuthorizationStatus {
@@ -101,6 +105,8 @@ impl AuthorizationStatus {
             Self::Valid => "valid",
             Self::Invalid => "invalid",
             Self::Deactivated => "deactivated",
+            Self::Expired => "expired",
+            Self::Revoked => "revoked",
         }
     }
 
@@ -111,8 +117,20 @@ impl AuthorizationStatus {
             "valid" => Ok(Self::Valid),
             "invalid" => Ok(Self::Invalid),
             "deactivated" => Ok(Self::Deactivated),
+            "expired" => Ok(Self::Expired),
+            "revoked" => Ok(Self::Revoked),
             _ => Err(unknown_status("authorization", value)),
         }
+    }
+
+    /// 是否已经不可能再通过轮询改变。
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
+
+    /// 是否以失败告终（`invalid`、`deactivated`、`expired`、`revoked`）。
+    pub const fn is_failed(self) -> bool {
+        matches!(self, Self::Invalid | Self::Deactivated | Self::Expired | Self::Revoked)
     }
 }
 
@@ -215,6 +233,8 @@ pub struct Authorization {
     pub status: AuthorizationStatus,
     /// The identifier this authorization covers.
     pub identifier: Identifier,
+    /// Whether the server marked this authorization as a wildcard validation.
+    pub wildcard: bool,
     /// The challenges the server offers, in server order.
     pub challenges: Vec<Challenge>,
 }
@@ -369,6 +389,7 @@ pub fn parse_authorization(url: &str, body: &[u8]) -> Result<Authorization> {
             kind: string_field(&identifier, "type", "identifier")?.to_owned(),
             value: string_field(&identifier, "value", "identifier")?.to_owned(),
         },
+        wildcard: document.get("wildcard").and_then(Value::as_bool).unwrap_or(false),
         challenges: parsed,
     })
 }

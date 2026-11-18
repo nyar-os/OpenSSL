@@ -1,110 +1,209 @@
-//! DNS provider conformance: manual placement and the Cloudflare adapter against a
-//! loopback fixture API.
+//! DNS provider 符合性：句柄所有权、挑战记录名，以及针对 loopback 夹具 API 的
+//! Cloudflare 适配器。
 
 mod mock;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU32, Ordering},
+};
 
 use boost_net::http::{HttpTransport, Url};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use open_ssl_core::{
     ErrorCode,
-    dns::{DnsProvider, Manual, TxtRecord, challenge_fqdn, cloudflare::Cloudflare, credentials::Secret, zone_name},
+    dns::{
+        DnsProvider, Manual, RecordHandle, TxtRecord, challenge_fqdn,
+        cloudflare::{Cloudflare, Zone},
+        credentials::Secret,
+    },
 };
 
 const FQDN: &str = "_acme-challenge.wxtoken.work";
 const TOKEN: &str = "cf-token-keep-out-of-errors";
 
-#[test]
-fn manual_provider_reports_the_record_to_place_and_replaces_idempotently() {
-    let mut provider = Manual::new();
-    let fqdn = challenge_fqdn("WXTOKEN.WORK.");
-    assert_eq!(fqdn, FQDN);
-    let record = provider.put_txt(&fqdn, "value-one").expect("manual placement");
-    assert_eq!(record, TxtRecord { fqdn: FQDN.to_owned(), value: "value-one".to_owned() });
-    provider.put_txt(&fqdn, "value-two").expect("manual replacement");
-    assert_eq!(provider.pending_records(), &[TxtRecord { fqdn: FQDN.to_owned(), value: "value-two".to_owned() }]);
-    provider.delete_txt(&fqdn).expect("manual removal");
-    assert!(provider.pending_records().is_empty());
-    assert!(provider.put_txt("wxtoken.work", "not-a-challenge-name").is_err());
+/// 一条脚本化的 provider 记录：id、name、content。
+type Registry = Arc<Mutex<Vec<(String, String, String)>>>;
+
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == key).then(|| value.to_owned())
+    })
 }
 
-#[test]
-fn zone_name_requires_the_challenge_label() {
-    assert_eq!(zone_name(FQDN).expect("zone"), "wxtoken.work");
-    assert_eq!(zone_name("wxtoken.work").expect_err("missing label").code(), ErrorCode::InvalidArgument);
-    assert_eq!(zone_name("_acme-challenge.").expect_err("empty zone").code(), ErrorCode::InvalidArgument);
+fn json_response(status: u16, body: Value) -> mock::MockResponse {
+    mock::MockResponse::json(status, &body.to_string())
 }
 
-fn loopback_cloudflare(script: mock::Script) -> (mock::MockServer, Cloudflare<HttpTransport>) {
+/// 一个最小的 Cloudflare TXT 记录注册表：查询、创建、按 id 删除。
+fn cloudflare_registry() -> (mock::Script, Registry, Arc<AtomicU32>) {
+    let state: Registry = Arc::new(Mutex::new(Vec::new()));
+    let next = Arc::new(AtomicU32::new(0));
+    let script = {
+        let state = Arc::clone(&state);
+        let next = Arc::clone(&next);
+        Arc::new(move |request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
+            let method = request.method.as_str();
+            let route = request.route().to_owned();
+            if method == "GET" && route == "/client/v4/zones" {
+                return json_response(200, json!({ "success": true, "result": [{ "id": "zone-1" }] }));
+            }
+            if method == "GET" && route == "/client/v4/zones/zone-1/dns_records" {
+                let name = query_value(request.query(), "name").unwrap_or_default();
+                let records: Vec<Value> = state
+                    .lock()
+                    .expect("registry")
+                    .iter()
+                    .filter(|(_, record_name, _)| record_name == &name)
+                    .map(|(id, name, content)| json!({ "id": id, "name": name, "content": content }))
+                    .collect();
+                return json_response(200, json!({ "success": true, "result": records }));
+            }
+            if method == "POST" && route == "/client/v4/zones/zone-1/dns_records" {
+                let body = request.body_json();
+                let id = format!("rec-{}", next.fetch_add(1, Ordering::SeqCst) + 1);
+                let name = body["name"].as_str().unwrap_or_default().to_owned();
+                let content = body["content"].as_str().unwrap_or_default().to_owned();
+                state.lock().expect("registry").push((id.clone(), name, content));
+                return json_response(200, json!({ "success": true, "result": { "id": id } }));
+            }
+            if method == "DELETE" && route.starts_with("/client/v4/zones/zone-1/dns_records/") {
+                let id = route.rsplit('/').next().unwrap_or_default().to_owned();
+                state.lock().expect("registry").retain(|(record_id, _, _)| record_id != &id);
+                return json_response(200, json!({ "success": true, "result": { "id": id } }));
+            }
+            json_response(500, json!({ "success": false, "errors": [{ "message": "unhandled fixture path" }] }))
+        })
+    };
+    (script, state, next)
+}
+
+fn loopback_cloudflare(script: mock::Script, zone: Zone) -> (mock::MockServer, Cloudflare<HttpTransport>) {
     let server = mock::MockServer::start(script);
     let api_base = Url::parse(&format!("{}/client/v4", server.base)).expect("loopback API base");
-    let provider = Cloudflare::with_token(HttpTransport::new(), api_base, Secret::new(TOKEN));
+    let provider = Cloudflare::with_zone(HttpTransport::new(), api_base, Secret::new(TOKEN), zone);
     (server, provider)
 }
 
 #[test]
-fn cloudflare_replaces_existing_txt_records_before_creating() {
-    let script = Arc::new(|request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
-        let route = request.route().to_owned();
-        match (request.method.as_str(), route.as_str()) {
-            ("GET", "/client/v4/zones") => mock::MockResponse::json(200, r#"{"success":true,"result":[{"id":"zone-1"}]}"#),
-            ("GET", "/client/v4/zones/zone-1/dns_records") => {
-                mock::MockResponse::json(200, r#"{"success":true,"result":[{"id":"rec-1"},{"id":"rec-2"}]}"#)
-            }
-            ("DELETE", "/client/v4/zones/zone-1/dns_records/rec-1") | ("DELETE", "/client/v4/zones/zone-1/dns_records/rec-2") => {
-                mock::MockResponse::json(200, r#"{"success":true,"result":{"id":"deleted"}}"#)
-            }
-            ("POST", "/client/v4/zones/zone-1/dns_records") => mock::MockResponse::json(200, r#"{"success":true,"result":{"id":"rec-3"}}"#),
-            _ => mock::MockResponse::json(500, r#"{"success":false,"errors":[{"message":"unhandled fixture path"}]}"#),
-        }
-    });
-    let (server, mut provider) = loopback_cloudflare(script);
-    let record = provider.put_txt(FQDN, "token.thumbprint").expect("cloudflare placement");
-    assert_eq!(record, TxtRecord { fqdn: FQDN.to_owned(), value: "token.thumbprint".to_owned() });
-
-    let requests = server.requests();
-    let routes: Vec<(&str, &str)> = requests.iter().map(|request| (request.method.as_str(), request.route())).collect();
-    assert_eq!(
-        routes,
-        vec![
-            ("GET", "/client/v4/zones"),
-            ("GET", "/client/v4/zones/zone-1/dns_records"),
-            ("DELETE", "/client/v4/zones/zone-1/dns_records/rec-1"),
-            ("DELETE", "/client/v4/zones/zone-1/dns_records/rec-2"),
-            ("POST", "/client/v4/zones/zone-1/dns_records"),
-        ]
-    );
-    for request in &requests {
-        assert_eq!(request.header("authorization"), Some(&format!("Bearer {TOKEN}")[..]), "every API call authenticates");
-    }
-    let zone_query = requests[0].query();
-    assert!(zone_query.contains("name=wxtoken.work"), "the zone is looked up by name: {zone_query}");
-    let list_query = requests[1].query();
-    assert!(
-        list_query.contains("type=TXT") && list_query.contains("name=_acme-challenge.wxtoken.work"),
-        "TXT records are listed by name: {list_query}"
-    );
-    let created: Value = requests[4].body_json();
-    assert_eq!(created["type"], "TXT");
-    assert_eq!(created["name"], FQDN);
-    assert_eq!(created["content"], "token.thumbprint");
+fn challenge_fqdn_strips_the_wildcard_label() {
+    assert_eq!(challenge_fqdn("*.example.com"), "_acme-challenge.example.com");
+    assert_eq!(challenge_fqdn("example.com"), "_acme-challenge.example.com");
+    assert_eq!(challenge_fqdn("*.Example.COM."), "_acme-challenge.example.com");
 }
 
 #[test]
-fn cloudflare_delete_txt_without_existing_records_touches_nothing() {
+fn record_handle_rejects_an_empty_provider_id() {
+    assert_eq!(RecordHandle::new("   ").expect_err("empty handle").code(), ErrorCode::Protocol);
+    assert_eq!(RecordHandle::new("rec-1").expect("handle").as_str(), "rec-1");
+}
+
+#[test]
+fn manual_keeps_two_values_for_one_name_and_deletes_by_handle() {
+    let mut provider = Manual::new();
+    let first = provider.put_txt(FQDN, "value-one").expect("manual placement");
+    let second = provider.put_txt(FQDN, "value-two").expect("manual second placement");
+    assert_ne!(first.handle, second.handle);
+    assert_eq!(provider.pending_records(), &[first.clone(), second.clone()]);
+
+    assert_eq!(provider.find_txt(FQDN, "value-two").expect("find"), Some(second.clone()));
+    assert_eq!(provider.find_txt(FQDN, "absent").expect("find"), None);
+
+    provider.delete_txt(&first).expect("manual removal");
+    assert_eq!(provider.pending_records(), &[second]);
+    assert_eq!(provider.find_txt(FQDN, "value-one").expect("find"), None);
+}
+
+#[test]
+fn manual_rejects_empty_names_and_values() {
+    let mut provider = Manual::new();
+    assert_eq!(provider.put_txt("", "value").expect_err("empty name").code(), ErrorCode::InvalidArgument);
+    assert_eq!(provider.put_txt(FQDN, "").expect_err("empty value").code(), ErrorCode::InvalidArgument);
+    assert!(provider.pending_records().is_empty());
+}
+
+#[test]
+fn cloudflare_reuses_an_identical_record_instead_of_deleting() {
+    let (script, state, _next) = cloudflare_registry();
+    state.lock().expect("registry").push(("rec-existing".to_owned(), FQDN.to_owned(), "value-one".to_owned()));
+    let (server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
+
+    let record = provider.put_txt(FQDN, "value-one").expect("reuse");
+    assert_eq!(
+        record,
+        TxtRecord { fqdn: FQDN.to_owned(), value: "value-one".to_owned(), handle: RecordHandle::new("rec-existing").expect("handle") }
+    );
+    assert_eq!(state.lock().expect("registry").len(), 1);
+
+    let routes: Vec<(String, String)> = server.requests().iter().map(|request| (request.method.clone(), request.route().to_owned())).collect();
+    assert_eq!(
+        routes,
+        vec![("GET".to_owned(), "/client/v4/zones".to_owned()), ("GET".to_owned(), "/client/v4/zones/zone-1/dns_records".to_owned())],
+        "a reuse must not create or delete anything"
+    );
+}
+
+#[test]
+fn cloudflare_keeps_two_values_for_the_same_name() {
+    let (script, state, _next) = cloudflare_registry();
+    let (server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
+
+    let first = provider.put_txt(FQDN, "value-one").expect("first placement");
+    let second = provider.put_txt(FQDN, "value-two").expect("second placement");
+    assert_ne!(first.handle, second.handle);
+    assert_eq!(state.lock().expect("registry").len(), 2, "both values coexist");
+
+    let deletes = server.requests().iter().filter(|request| request.method == "DELETE").count();
+    assert_eq!(deletes, 0, "placing a value never removes another task's record");
+}
+
+#[test]
+fn cloudflare_deletes_only_the_owned_record() {
+    let (script, state, _next) = cloudflare_registry();
+    let (server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
+
+    let first = provider.put_txt(FQDN, "value-one").expect("first placement");
+    let second = provider.put_txt(FQDN, "value-two").expect("second placement");
+    provider.delete_txt(&first).expect("delete owned record");
+
+    let remaining = state.lock().expect("registry").clone();
+    assert_eq!(remaining, vec![("rec-2".to_owned(), FQDN.to_owned(), "value-two".to_owned())]);
+    assert_eq!(provider.find_txt(FQDN, "value-two").expect("find"), Some(second));
+
+    let deletes: Vec<String> =
+        server.requests().iter().filter(|request| request.method == "DELETE").map(|request| request.route().to_owned()).collect();
+    assert_eq!(deletes, vec!["/client/v4/zones/zone-1/dns_records/rec-1".to_owned()]);
+}
+
+#[test]
+fn cloudflare_uses_a_configured_zone_id_without_a_name_lookup() {
     let script = Arc::new(|request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
         let route = request.route().to_owned();
         match (request.method.as_str(), route.as_str()) {
-            ("GET", "/client/v4/zones") => mock::MockResponse::json(200, r#"{"success":true,"result":[{"id":"zone-1"}]}"#),
-            ("GET", "/client/v4/zones/zone-1/dns_records") => mock::MockResponse::json(200, r#"{"success":true,"result":[]}"#),
-            _ => mock::MockResponse::json(500, r#"{"success":false,"errors":[{"message":"unhandled fixture path"}]}"#),
+            ("GET", "/client/v4/zones/zone-9/dns_records") => mock::MockResponse::json(200, r#"{"success":true,"result":[]}"#),
+            ("POST", "/client/v4/zones/zone-9/dns_records") => mock::MockResponse::json(200, r#"{"success":true,"result":{"id":"rec-9"}}"#),
+            _ => mock::MockResponse::json(500, r#"{"success":false,"errors":[{"message":"unexpected path"}]}"#),
         }
     });
-    let (server, mut provider) = loopback_cloudflare(script);
-    provider.delete_txt(FQDN).expect("empty removal");
-    assert_eq!(server.requests().len(), 2);
+    let (server, mut provider) = loopback_cloudflare(script, Zone::id("zone-9").expect("zone"));
+
+    let record = provider.put_txt(FQDN, "value-one").expect("placement");
+    assert_eq!(record.handle.as_str(), "rec-9");
+    let routes: Vec<String> = server.requests().iter().map(|request| request.route().to_owned()).collect();
+    assert_eq!(routes, vec!["/client/v4/zones/zone-9/dns_records".to_owned(), "/client/v4/zones/zone-9/dns_records".to_owned()]);
+}
+
+#[test]
+fn cloudflare_reports_a_missing_zone_name() {
+    let script = Arc::new(|_request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
+        mock::MockResponse::json(200, r#"{"success":true,"result":[]}"#)
+    });
+    let (_server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
+    let error = provider.put_txt(FQDN, "value").expect_err("an unknown zone must fail");
+    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert!(error.message().contains("wxtoken.work"), "the zone name must be named: {error}");
 }
 
 #[test]
@@ -112,7 +211,7 @@ fn cloudflare_maps_api_failures_to_structured_errors_without_leaking_the_token()
     let script = Arc::new(|_request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
         mock::MockResponse::json(200, r#"{"success":false,"errors":[{"code":10000,"message":"Could not route your request"}]}"#)
     });
-    let (_server, mut provider) = loopback_cloudflare(script);
+    let (_server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
     let error = provider.put_txt(FQDN, "value").expect_err("a refused API call must fail");
     assert_eq!(error.code(), ErrorCode::Protocol);
     assert!(error.message().contains("Could not route your request"), "the API message must surface: {error}");
@@ -125,21 +224,10 @@ fn cloudflare_maps_forbidden_responses_to_denied() {
     let script = Arc::new(|_request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
         mock::MockResponse::json(403, r#"{"success":false,"errors":[{"message":"Token does not have permission"}]}"#)
     });
-    let (_server, mut provider) = loopback_cloudflare(script);
+    let (_server, mut provider) = loopback_cloudflare(script, Zone::name("wxtoken.work").expect("zone"));
     let error = provider.put_txt(FQDN, "value").expect_err("a forbidden API call must fail");
     assert_eq!(error.code(), ErrorCode::Denied);
     assert!(!error.message().contains(TOKEN), "the token must never leak: {error}");
-}
-
-#[test]
-fn cloudflare_reports_a_missing_zone_as_a_protocol_error() {
-    let script = Arc::new(|_request: &mock::RecordedRequest, _index: usize, _base: &str| -> mock::MockResponse {
-        mock::MockResponse::json(200, r#"{"success":true,"result":[]}"#)
-    });
-    let (_server, mut provider) = loopback_cloudflare(script);
-    let error = provider.put_txt(FQDN, "value").expect_err("an unknown zone must fail");
-    assert_eq!(error.code(), ErrorCode::Protocol);
-    assert!(error.message().contains("wxtoken.work"), "the zone name must be named: {error}");
 }
 
 #[test]

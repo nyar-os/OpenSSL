@@ -1,64 +1,97 @@
-//! DNS-01 record placement behind a provider-neutral abstraction.
+//! 以 provider 中立抽象承载 DNS-01 记录的落位。
 //!
-//! [`DnsProvider`] implementations replace the `_acme-challenge.` TXT record for one
-//! fqdn idempotently. [`Manual`] is the fallback that hands the record back for a human
-//! to place; [`cloudflare::Cloudflare`] is the first API adapter.
+//! 记录按句柄拥有，而不是按名字覆盖：[`DnsProvider::put_txt`] 从不删除既有记录，只返回
+//! 标识本任务新建或复用记录的句柄；[`DnsProvider::delete_txt`] 只删除它拿到的句柄对应的那条
+//! 记录。裸域与泛域名共享同一个 `_acme-challenge.` 记录名，因此多个值必须能共存到各自的
+//! owner 完成清理。
+//!
+//! [`Manual`] 是把记录交回人工放置的兜底实现；[`cloudflare::Cloudflare`] 是第一个 API 适配器，
+//! 要求调用方显式配置 zone。
 
 pub mod cloudflare;
 pub mod credentials;
 
 use crate::errors::{Error, ErrorCode, Result};
 
-/// The label every dns-01 TXT record is placed under.
+/// 每条 dns-01 TXT 记录所在的标签。
 const CHALLENGE_LABEL: &str = "_acme-challenge";
 
-/// One TXT record a provider must place or remove.
+/// provider 侧一条 TXT 记录的身份。
+///
+/// 值是 provider 返回的不透明 id，且不允许为空。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordHandle(String);
+
+impl RecordHandle {
+    /// 接管一个 provider 侧 id。
+    ///
+    /// 空 id 会让之后每一次删除都产生歧义，因此按违反 provider 合同报
+    /// [`ErrorCode::Protocol`]。
+    pub fn new(id: impl Into<String>) -> Result<Self> {
+        let id = id.into();
+        if id.trim().is_empty() {
+            return Err(Error::new(ErrorCode::Protocol, "DNS 记录句柄不能为空"));
+        }
+        Ok(Self(id))
+    }
+
+    /// 原始 provider 侧 id。
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// provider 为本次任务创建或复用的一条 TXT 记录。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxtRecord {
-    /// The fully qualified record name, for example `_acme-challenge.example.test`.
+    /// 完整记录名，例如 `_acme-challenge.example.test`。
     pub fqdn: String,
-    /// The TXT value: the key authorization string.
+    /// TXT 值，是 dns-01 摘要而不是 key authorization。
     pub value: String,
+    /// 在 provider 侧拥有这条记录的句柄。
+    pub handle: RecordHandle,
 }
 
-/// A provider that can place dns-01 TXT records.
+/// 能够放置 dns-01 TXT 记录的 provider。
 pub trait DnsProvider {
-    /// Place the TXT record for one challenge fqdn, replacing any previous value idempotently.
+    /// 创建一条由本任务拥有的 TXT 记录。
+    ///
+    /// 实现不得删除任何既有记录，也不得让这条记录与其它任务共享。复用完全相同的既有记录
+    /// 是允许的，并通过返回的句柄体现。
     fn put_txt(&mut self, fqdn: &str, value: &str) -> Result<TxtRecord>;
 
-    /// Remove every TXT record placed for one challenge fqdn.
-    fn delete_txt(&mut self, fqdn: &str) -> Result<()>;
+    /// 精确查找同名同值的既有记录，供复用与对账。
+    fn find_txt(&mut self, fqdn: &str, value: &str) -> Result<Option<TxtRecord>>;
+
+    /// 只删除 `record` 句柄对应的那一条记录。
+    fn delete_txt(&mut self, record: &TxtRecord) -> Result<()>;
 }
 
-/// The dns-01 record name for one domain.
-pub fn challenge_fqdn(domain: &str) -> String {
-    let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
-    format!("{CHALLENGE_LABEL}.{domain}")
+/// 一个 authorization 身份对应的 dns-01 记录名。
+///
+/// 泛域名标识 `*.example.test` 与裸域标识在同一 `_acme-challenge.example.test` 名下完成验证，
+/// 因此前导 `*.` 被剥掉，而不是被复制进记录名。
+pub fn challenge_fqdn(identifier: &str) -> String {
+    let name = identifier.trim().trim_end_matches('.').to_ascii_lowercase();
+    let name = name.strip_prefix("*.").unwrap_or(name.as_str());
+    format!("{CHALLENGE_LABEL}.{name}")
 }
 
-/// The zone a challenge fqdn belongs to: the fqdn without the `_acme-challenge.` label.
-pub fn zone_name(fqdn: &str) -> Result<&str> {
-    let zone = fqdn
-        .strip_prefix(&format!("{CHALLENGE_LABEL}."))
-        .filter(|zone| !zone.is_empty())
-        .ok_or_else(|| Error::new(ErrorCode::InvalidArgument, format!("`{fqdn}` is not an `_acme-challenge.` record name")))?;
-    Ok(zone)
-}
-
-/// The fallback provider: records are kept for a human to place by hand.
+/// 兜底 provider：记录保留下来，等待人工放置。
 #[derive(Debug, Default)]
 pub struct Manual {
     placed: Vec<TxtRecord>,
+    next_id: u64,
 }
 
 impl Manual {
-    /// Create an empty manual provider.
+    /// 创建一个空的 manual provider。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The records currently awaiting manual placement.
+    /// 当前等待人工放置的记录。
     pub fn pending_records(&self) -> &[TxtRecord] {
         &self.placed
     }
@@ -66,16 +99,25 @@ impl Manual {
 
 impl DnsProvider for Manual {
     fn put_txt(&mut self, fqdn: &str, value: &str) -> Result<TxtRecord> {
-        zone_name(fqdn)?;
-        let record = TxtRecord { fqdn: fqdn.to_owned(), value: value.to_owned() };
-        self.placed.retain(|placed| placed.fqdn != fqdn);
+        if fqdn.trim().is_empty() {
+            return Err(Error::new(ErrorCode::InvalidArgument, "TXT 记录名不能为空"));
+        }
+        if value.is_empty() {
+            return Err(Error::new(ErrorCode::InvalidArgument, "TXT 记录值不能为空"));
+        }
+        self.next_id += 1;
+        let record =
+            TxtRecord { fqdn: fqdn.to_owned(), value: value.to_owned(), handle: RecordHandle::new(format!("manual-{}", self.next_id))? };
         self.placed.push(record.clone());
         Ok(record)
     }
 
-    fn delete_txt(&mut self, fqdn: &str) -> Result<()> {
-        zone_name(fqdn)?;
-        self.placed.retain(|placed| placed.fqdn != fqdn);
+    fn find_txt(&mut self, fqdn: &str, value: &str) -> Result<Option<TxtRecord>> {
+        Ok(self.placed.iter().find(|placed| placed.fqdn == fqdn && placed.value == value).cloned())
+    }
+
+    fn delete_txt(&mut self, record: &TxtRecord) -> Result<()> {
+        self.placed.retain(|placed| placed.handle != record.handle);
         Ok(())
     }
 }

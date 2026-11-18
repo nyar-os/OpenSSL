@@ -19,7 +19,11 @@ use signature::Verifier;
 
 use open_ssl_core::{
     ErrorCode,
-    acme::{AccountKey, AccountRef, AccountStatus, AcmeClient, ChallengeStatus, OrderStatus, b64url, build_jws, jwk_thumbprint},
+    acme::{
+        AccountKey, AccountRef, AccountStatus, AcmeClient, AuthorizationStatus, ChallengeStatus, OrderPollVerdict, OrderStatus, b64url,
+        build_jws, jwk_thumbprint, order_poll_verdict, retry_after_delay, txt_digest, types::parse_authorization,
+    },
+    dns::challenge_fqdn,
 };
 
 const CHAIN_PEM: &str = concat!(
@@ -179,6 +183,11 @@ fn full_dns01_flow_against_a_loopback_acme_server() {
     let dns = client.dns_challenge(&order.authorizations[0]).expect("dns-01 challenge");
     assert_eq!(dns.challenge.token, "evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA");
     assert_eq!(dns.key_authorization, format!("evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA.{thumbprint}"));
+    assert_eq!(dns.identifier, "example.test");
+    assert!(!dns.wildcard);
+    assert_eq!(dns.record_fqdn(), "_acme-challenge.example.test");
+    assert_eq!(dns.txt_value(), txt_digest(&dns.key_authorization), "TXT 值是 key authorization 的摘要");
+    assert_ne!(dns.txt_value(), dns.key_authorization, "key authorization 本身不得发布");
 
     assert_eq!(client.respond_challenge(&dns.challenge.url).expect("challenge response"), ChallengeStatus::Processing);
 
@@ -312,6 +321,228 @@ fn a_second_bad_nonce_stops_after_exactly_one_retry() {
     assert!(error.message().contains("stale nonce"), "the problem detail must surface: {error}");
     let posts = server.requests().into_iter().filter(|request| request.method == "POST").count();
     assert_eq!(posts, 2, "exactly one retry after the first 409");
+}
+
+#[test]
+fn bad_nonce_is_recognized_by_the_problem_type_not_the_status() {
+    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[13u8; 32]).expect("test key"));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let script = {
+        let attempts = Arc::clone(&attempts);
+        Arc::new(move |request: &mock::RecordedRequest, _index: usize, base: &str| -> mock::MockResponse {
+            let route = request.route().to_owned();
+            match (request.method.as_str(), route.as_str()) {
+                ("GET", "/directory") => mock::MockResponse::json(
+                    200,
+                    &serde_json::json!({
+                        "newNonce": format!("{base}/new-nonce"),
+                        "newAccount": format!("{base}/new-account"),
+                        "newOrder": format!("{base}/new-order"),
+                        "revokeCert": format!("{base}/revoke-cert"),
+                    })
+                    .to_string(),
+                )
+                .with_header("Replay-Nonce", "nonce-directory"),
+                ("POST", "/new-account") => {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        // 规范里 badNonce 常见状态是 400，不能只认 409。
+                        mock::MockResponse::json(400, r#"{"type":"urn:ietf:params:acme:error:badNonce","detail":"stale nonce"}"#)
+                            .with_header("Replay-Nonce", "nonce-retry")
+                    }
+                    else {
+                        mock::MockResponse::json(201, r#"{"status":"valid"}"#).with_header("Location", &format!("{base}/account/1"))
+                    }
+                }
+                _ => mock::MockResponse::json(500, r#"{"detail":"unhandled fixture path"}"#),
+            }
+        })
+    };
+    let server = mock::MockServer::start(script);
+    let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
+    let account = client.new_account(&[], true).expect("a badNonce on 400 is retried once");
+    assert_eq!(account.url, server.url("/account/1"));
+    let posts = server.requests().into_iter().filter(|request| request.method == "POST").count();
+    assert_eq!(posts, 2, "exactly one retry after the 400 badNonce");
+}
+
+#[test]
+fn a_conflict_without_a_bad_nonce_problem_is_not_retried() {
+    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[17u8; 32]).expect("test key"));
+    let script = Arc::new(move |request: &mock::RecordedRequest, _index: usize, base: &str| -> mock::MockResponse {
+        let route = request.route().to_owned();
+        match (request.method.as_str(), route.as_str()) {
+            ("GET", "/directory") => mock::MockResponse::json(
+                200,
+                &serde_json::json!({
+                    "newNonce": format!("{base}/new-nonce"),
+                    "newAccount": format!("{base}/new-account"),
+                    "newOrder": format!("{base}/new-order"),
+                    "revokeCert": format!("{base}/revoke-cert"),
+                })
+                .to_string(),
+            )
+            .with_header("Replay-Nonce", "nonce-directory"),
+            ("POST", "/new-account") => {
+                mock::MockResponse::json(409, r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"account already exists"}"#)
+            }
+            _ => mock::MockResponse::json(500, r#"{"detail":"unhandled fixture path"}"#),
+        }
+    });
+    let server = mock::MockServer::start(script);
+    let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
+    let error = client.new_account(&[], true).expect_err("only badNonce is retried");
+    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert!(error.message().contains("account already exists"), "the problem detail must surface: {error}");
+    let posts = server.requests().into_iter().filter(|request| request.method == "POST").count();
+    assert_eq!(posts, 1, "a non-badNonce conflict must not be retried");
+}
+
+#[test]
+fn dns01_txt_digest_matches_independently_derived_vectors() {
+    // 独立推导（本机 Python，不依赖被测实现）：
+    //   python -c "import base64,hashlib; f=lambda s: base64.urlsafe_b64encode(hashlib.sha256(s.encode()).digest()).rstrip(b'=').decode(); print(f('...'))"
+    // 输入是 key authorization（`token.thumbprint`），输出是应当发布的 TXT 值。
+    //
+    // 向量 1 使用 RFC 8555 §8.1 的示例 token 与 RFC 7638 的示例 thumbprint：
+    //   sha256(b'evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs')
+    //   = 653471d42925d7eb4cd39a39cda8b34d3034c94cb9006ade32048d582ebb2e5f
+    //   → base64url 去填充 → ZTRx1Ckl1-tM05o5zaizTTA0yUy5AGereMgSNWC6Ll8
+    assert_eq!(
+        txt_digest("evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"),
+        "ZTRx1Ckl1-tM05o5zaizTTA0yUy5AGereMgSNWC6Ll8"
+    );
+    // 向量 2 用最简输入，便于核对长度与 URL-safe 字母表：
+    //   sha256(b'token.thumbprint') = eb5ac167fe249c76e53b430da3116c5d9fde4c5507ba6d01e885516e1bd49f92
+    //   → 61rBZ_4knHblO0MNoxFsXZ_eTFUHum0B6IVRbhvUn5I
+    assert_eq!(txt_digest("token.thumbprint"), "61rBZ_4knHblO0MNoxFsXZ_eTFUHum0B6IVRbhvUn5I");
+
+    let encoded = txt_digest("token.thumbprint");
+    assert_eq!(encoded.len(), 43, "SHA-256 摘要编码后固定 43 个字符");
+    assert!(!encoded.contains('='), "不得保留填充");
+    assert!(!encoded.contains('+') && !encoded.contains('/'), "必须使用 URL-safe 字母表");
+}
+
+#[test]
+fn a_wildcard_authorization_keeps_the_flag_and_shares_the_record_name() {
+    let body = serde_json::json!({
+        "status": "pending",
+        "identifier": { "type": "dns", "value": "*.example.test" },
+        "wildcard": true,
+        "challenges": [{
+            "url": "https://acme.example.test/challenge/1",
+            "type": "dns-01",
+            "token": "tok",
+        }],
+    })
+    .to_string();
+    let authorization = parse_authorization("https://acme.example.test/authz/1", body.as_bytes()).expect("wildcard authorization");
+    assert!(authorization.wildcard);
+    assert_eq!(authorization.identifier.value, "*.example.test");
+    assert_eq!(challenge_fqdn(&authorization.identifier.value), "_acme-challenge.example.test");
+    assert_eq!(challenge_fqdn("example.test"), "_acme-challenge.example.test");
+}
+
+#[test]
+fn order_poll_verdicts_distinguish_progress_from_terminal_states() {
+    assert_eq!(order_poll_verdict(OrderStatus::Pending), OrderPollVerdict::Pending);
+    assert_eq!(order_poll_verdict(OrderStatus::Ready), OrderPollVerdict::Pending);
+    assert_eq!(order_poll_verdict(OrderStatus::Processing), OrderPollVerdict::Pending);
+    assert_eq!(order_poll_verdict(OrderStatus::Valid), OrderPollVerdict::Issued);
+    assert_eq!(order_poll_verdict(OrderStatus::Invalid), OrderPollVerdict::Failed);
+}
+
+#[test]
+fn authorization_statuses_separate_pending_from_terminal_failures() {
+    assert!(!AuthorizationStatus::parse("pending").expect("pending").is_terminal());
+    assert_eq!(AuthorizationStatus::parse("expired").expect("expired"), AuthorizationStatus::Expired);
+    assert_eq!(AuthorizationStatus::parse("revoked").expect("revoked"), AuthorizationStatus::Revoked);
+    assert!(AuthorizationStatus::Expired.is_failed());
+    assert!(AuthorizationStatus::Revoked.is_failed());
+    assert!(AuthorizationStatus::Deactivated.is_failed());
+    assert!(AuthorizationStatus::Invalid.is_failed());
+    assert!(!AuthorizationStatus::Valid.is_failed());
+    assert!(AuthorizationStatus::Valid.is_terminal());
+}
+
+#[test]
+fn retry_after_honors_seconds_dates_and_the_cap() {
+    let fallback = Duration::from_secs(2);
+    let max = Duration::from_secs(10);
+    assert_eq!(retry_after_delay(None, 0, fallback, max), fallback);
+    assert_eq!(retry_after_delay(Some("  "), 0, fallback, max), fallback);
+    assert_eq!(retry_after_delay(Some("3"), 0, fallback, max), Duration::from_secs(3));
+    assert_eq!(retry_after_delay(Some("300"), 0, fallback, max), max, "a huge delta is capped");
+    // `Sun, 06 Nov 1994 08:49:37 GMT` = 784111777 Unix 秒（python calendar.timegm 推导）。
+    assert_eq!(retry_after_delay(Some("Sun, 06 Nov 1994 08:49:37 GMT"), 784_111_777, fallback, max), Duration::ZERO);
+    assert_eq!(retry_after_delay(Some("Sun, 06 Nov 1994 08:49:42 GMT"), 784_111_777, fallback, max), Duration::from_secs(5));
+    assert_eq!(retry_after_delay(Some("Sun, 06 Nov 1994 09:00:00 GMT"), 784_111_777, fallback, max), max);
+    assert_eq!(retry_after_delay(Some("not a delay"), 0, fallback, max), fallback, "unparseable values fall back");
+}
+
+/// 绑定账户的最小目录脚本，供轮询终止状态用例复用。
+fn polling_server(order_body: fn(&str) -> String) -> mock::MockServer {
+    let script = Arc::new(move |request: &mock::RecordedRequest, _index: usize, base: &str| -> mock::MockResponse {
+        let route = request.route().to_owned();
+        match (request.method.as_str(), route.as_str()) {
+            ("GET", "/directory") => mock::MockResponse::json(
+                200,
+                &serde_json::json!({
+                    "newNonce": format!("{base}/new-nonce"),
+                    "newAccount": format!("{base}/new-account"),
+                    "newOrder": format!("{base}/new-order"),
+                    "revokeCert": format!("{base}/revoke-cert"),
+                })
+                .to_string(),
+            )
+            .with_header("Replay-Nonce", "nonce-directory"),
+            ("POST", "/new-account") => mock::MockResponse::json(201, r#"{"status":"valid"}"#)
+                .with_header("Location", &format!("{base}/account/1"))
+                .with_header("Replay-Nonce", "nonce-account"),
+            ("HEAD", "/new-nonce") => mock::MockResponse::text(200, "application/octet-stream", "").with_header("Replay-Nonce", "nonce-head"),
+            ("POST", "/order/1") => mock::MockResponse::json(200, &order_body(base)).with_header("Replay-Nonce", "nonce-order"),
+            _ => mock::MockResponse::json(500, r#"{"detail":"unhandled fixture path"}"#),
+        }
+    });
+    mock::MockServer::start(script)
+}
+
+#[test]
+fn poll_order_reports_a_timeout_instead_of_returning_pending() {
+    let server = polling_server(|base| {
+        serde_json::json!({
+            "status": "processing",
+            "authorizations": [format!("{base}/authz/1")],
+            "finalize": format!("{base}/finalize/1"),
+        })
+        .to_string()
+    });
+    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[19u8; 32]).expect("test key"));
+    let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
+    client.new_account(&[], true).expect("account");
+    let error = client.poll_order(&server.url("/order/1"), 2, Duration::from_millis(1)).expect_err("an unfinished order is not success");
+    assert_eq!(error.code(), ErrorCode::Network);
+    assert!(error.message().contains("processing"), "the last status must be named: {error}");
+}
+
+#[test]
+fn poll_order_fails_fast_on_a_terminal_invalid_order() {
+    let server = polling_server(|base| {
+        serde_json::json!({
+            "status": "invalid",
+            "authorizations": [format!("{base}/authz/1")],
+            "finalize": format!("{base}/finalize/1"),
+            "error": { "type": "urn:ietf:params:acme:error:dns", "detail": "dns validation failed", "status": 403 },
+        })
+        .to_string()
+    });
+    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[23u8; 32]).expect("test key"));
+    let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
+    client.new_account(&[], true).expect("account");
+    let error = client.poll_order(&server.url("/order/1"), 4, Duration::from_millis(1)).expect_err("an invalid order is a failure");
+    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert!(error.message().contains("dns validation failed"), "the problem detail must surface: {error}");
+    let polls = server.requests().into_iter().filter(|request| request.route() == "/order/1").count();
+    assert_eq!(polls, 1, "an invalid order stops immediately");
 }
 
 #[test]

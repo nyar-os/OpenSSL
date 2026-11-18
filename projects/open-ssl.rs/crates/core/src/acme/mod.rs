@@ -10,7 +10,7 @@ pub mod directory;
 pub mod jws;
 pub mod types;
 
-pub use client::{AcmeClient, DnsChallenge};
+pub use client::{AcmeClient, DnsChallenge, OrderPollVerdict, order_poll_verdict, retry_after_delay, txt_digest};
 pub use directory::Directory;
 pub use jws::{AccountKey, AccountRef, b64url, build_jws, jwk_thumbprint};
 pub use types::{
