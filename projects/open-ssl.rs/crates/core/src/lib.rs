@@ -18,6 +18,8 @@ pub mod dns;
 pub mod errors;
 /// Host platform descriptor and the capability report.
 pub mod platform;
+/// 项目私有签发状态与纯本地签发计划。
+pub mod state;
 /// Product-owned TLS 1.3 client.
 pub mod tls;
 /// Product-owned X.509 parsing, PEM, and chain policy.
