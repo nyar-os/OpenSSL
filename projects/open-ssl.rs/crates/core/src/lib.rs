@@ -8,6 +8,8 @@ pub mod acme;
 pub mod audit;
 /// Product-owned PKCS#10 certificate signing requests.
 pub mod csr;
+/// 证书代交付：generation 清单、单一提交点与回滚。
+pub mod delivery;
 /// Product-owned ASN.1 DER codec.
 pub mod der;
 /// DNS-01 record placement, provider adapters, and project-scoped credentials.
