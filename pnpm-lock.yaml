@@ -21,8 +21,8 @@ importers:
   projects/open-ssl.ts/packages/open-ssl:
     dependencies:
       '@wae/commander':
-        specifier: 0.0.6
-        version: 0.0.6
+        specifier: 0.0.7
+        version: 0.0.7
     devDependencies:
       '@types/node':
         specifier: ^22.20.4
@@ -137,8 +137,8 @@ packages:
       typescript:
         optional: true
 
-  '@wae/commander@0.0.6':
-    resolution: {integrity: sha512-jRTwhX6iHPPQuchs4+BIfbrEjulGNV8w837jhwr+uxPTXOe+iWXw77OXz285jyEaLKZEGEq8FArJBW/YJWzFGA==}
+  '@wae/commander@0.0.7':
+    resolution: {}
     engines: {node: '>=20'}
 
   '@wae/wae-darwin-arm64@0.0.6':
@@ -324,7 +324,7 @@ snapshots:
     transitivePeerDependencies:
       - canvas
 
-  '@wae/commander@0.0.6': {}
+  '@wae/commander@0.0.7': {}
 
   '@wae/wae-darwin-arm64@0.0.6':
     optional: true

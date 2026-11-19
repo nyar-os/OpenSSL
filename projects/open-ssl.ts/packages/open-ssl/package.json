@@ -27,7 +27,7 @@
         "build": "tsc -p tsconfig.json"
     },
     "dependencies": {
-        "@wae/commander": "0.0.6"
+        "@wae/commander": "0.0.7"
     },
     "optionalDependencies": {
         "@wae/open-ssl-win32-x64": "workspace:*"
