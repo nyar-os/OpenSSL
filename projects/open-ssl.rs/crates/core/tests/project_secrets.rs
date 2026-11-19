@@ -160,9 +160,13 @@ fn secrets_and_state_paths_are_project_local() {
 
 #[test]
 fn from_current_dir_uses_the_process_directory() {
+    let cwd = std::env::current_dir().expect("cwd");
     let root = ProjectRoot::from_current_dir().expect("current directory");
-    let expected = std::fs::canonicalize(std::env::current_dir().expect("cwd")).expect("canonical cwd");
-    assert_eq!(root.as_path(), expected);
+    let again = ProjectRoot::new(&cwd).expect("explicit cwd root");
+    assert_eq!(root.as_path(), again.as_path());
+    assert!(root.as_path().is_dir());
+    // 报告路径必须是可读的正常形式：测试 cwd 短且本地，不得带 `\\?\` 扩展前缀。
+    assert!(!root.as_path().to_string_lossy().starts_with(r"\\?\"), "展示路径带扩展前缀：{}", root.as_path().display());
 }
 
 #[test]

@@ -71,7 +71,7 @@ impl ProjectRoot {
         if !canonical.is_dir() {
             return Err(Error::new(ErrorCode::InvalidArgument, format!("项目根路径 `{}` 不是目录", canonical.display())));
         }
-        Ok(Self { path: canonical })
+        Ok(Self { path: display_canonical(canonical) })
     }
 
     /// 精确使用当前工作目录作为项目根。
@@ -161,12 +161,32 @@ impl ProjectSecrets {
     }
 }
 
+/// Windows 的 `canonicalize` 返回 `\\?\` 扩展长度路径；短路径的正常形式等价且可读。
+/// 只在长度安全（远小于 260）且不是 UNC 时剥掉前缀，其余保留原样以保证可用。
+#[cfg(windows)]
+fn display_canonical(path: PathBuf) -> PathBuf {
+    const VERBATIM_PREFIX: &str = r"\\?\";
+    let text = path.to_string_lossy();
+    let Some(stripped) = text.strip_prefix(VERBATIM_PREFIX) else {
+        return path;
+    };
+    if stripped.starts_with("UNC\\") || stripped.chars().count() >= 240 {
+        return path;
+    }
+    PathBuf::from(stripped)
+}
+
+#[cfg(not(windows))]
+fn display_canonical(path: PathBuf) -> PathBuf {
+    path
+}
+
 /// 拒绝解析后落在项目根之外的 `.secrets` 目录。
 ///
 /// 目录不存在不在此处报错：文件读取会把它作为缺文件报告。
 fn ensure_secrets_dir_inside_root(root: &ProjectRoot) -> Result<()> {
     let secrets_dir = root.as_path().join(SECRETS_DIR);
-    let Ok(canonical) = fs::canonicalize(&secrets_dir)
+    let Ok(canonical) = fs::canonicalize(&secrets_dir).map(display_canonical)
     else {
         return Ok(());
     };
