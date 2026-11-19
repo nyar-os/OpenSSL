@@ -38,6 +38,8 @@ export interface AcmeIssueReport {
     orderUrl: string;
     generation: string;
     dnsRecordsRemoved: number;
+    /** Manual-path records the operator must still delete after delivery. */
+    manualRecordsToRemove?: AcmeTxtInstruction[];
     sans: string[];
     certificateSha256: string;
     notBeforeUnix: number;
@@ -45,11 +47,27 @@ export interface AcmeIssueReport {
     paths: AcmeGenerationPaths;
 }
 
-/** Outcome of `acmeIssue`: a dry run carries the plan, a real run the report. */
+/** One TXT record the operator has to place in the DNS console. */
+export interface AcmeTxtInstruction {
+    fqdn: string;
+    value: string;
+}
+
+/** Manual dns-01 prepare result: persisted action plus resume instruction. */
+export interface AcmeActionRequired {
+    actionId: string;
+    statusRef: string;
+    expiresUnix: number;
+    records: AcmeTxtInstruction[];
+    nextAction: { command: string; argv: string[] };
+}
+
+/** Outcome of `acmeIssue`: a dry run carries the plan, a manual prepare run the action. */
 export interface AcmeIssueOutcome {
     dryRun: boolean;
     plan?: AcmePlan;
     report?: AcmeIssueReport;
+    actionRequired?: AcmeActionRequired;
 }
 
 /** Capability availability states. `null` means available. */

@@ -40,7 +40,10 @@
             "dns-zone-id": "覆盖 `open-ssl.json` 的 `zone.id`（Cloudflare zone id）",
             "dns-zone-name": "覆盖 `open-ssl.json` 的 `zone.name`（Cloudflare zone 名）",
             "project": "持有 .secrets/open-ssl.json 的项目根（默认当前工作目录）",
-            "dns-ready": "配合 `manual`：记录已放好，只打印指引，不等待 stdin 确认"
+            "action": "以稳定 id 续跑已落盘的 manual DNS 动作（来自 prepare 运行或其信封输出）"
+        },
+        "prompt": {
+            "dns-records": "请在 DNS 控制台放置以下 TXT 记录，生效后回车确认：\n{records}"
         }
     }
 }

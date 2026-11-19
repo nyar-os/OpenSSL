@@ -40,7 +40,10 @@
             "dns-zone-id": "Override `zone.id` from `open-ssl.json` (Cloudflare zone id)",
             "dns-zone-name": "Override `zone.name` from `open-ssl.json` (Cloudflare zone name)",
             "project": "Project root owning .secrets/open-ssl.json (defaults to the working directory)",
-            "dns-ready": "With `manual`: records are already placed, print the guidance without waiting on stdin"
+            "action": "Resume a persisted manual DNS action by its stable id (from a prepare run or its envelope)"
+        },
+        "prompt": {
+            "dns-records": "Place these TXT records in your DNS console and press Enter once they are live:\n{records}"
         }
     }
 }

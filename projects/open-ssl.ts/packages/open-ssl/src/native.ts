@@ -61,11 +61,12 @@ export interface AcmeIssueOptions extends AcmeTargetOptions {
     dnsZoneName?: string;
     contact?: string[];
     /**
-     * With `dnsProvider: 'manual'`: the records were already placed (for
-     * example after an earlier run printed the instructions). Print the
-     * guidance without waiting on stdin; the CA validation still decides.
+     * With `dnsProvider: 'manual'`: stable id of a persisted `PendingAction`
+     * from an earlier prepare run. The resume run re-validates the order
+     * fingerprint, responds to the challenges and delivers; unknown, expired
+     * or mismatched ids are rejected.
      */
-    dnsReady?: boolean;
+    action?: string;
 }
 
 let cached: NativeBindings | null = null;

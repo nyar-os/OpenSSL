@@ -16,22 +16,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createCli, type CommandContext, type ParsedOptions } from '@wae/commander';
+import { CliError, createCli, EXIT, type ActionRequiredDescriptor, type CommandContext, type ParsedOptions } from '@wae/commander';
 
 import {
     AppError,
     OpenSSL,
     fromNativeError,
+    type AcmeActionRequired,
+    type AcmeIssueOptions,
     type AcmeIssueOutcome,
     type AcmePlan,
     type AcmeTargetOptions,
     type CapabilityItem,
 } from './index.js';
 import { loadRuntimeContract, type ActorChannel } from './runtime.js';
-
-const ENVELOPE_SCHEMA = 'wae.cli-result/v0';
-
-const EXIT = { OK: 0, FAILURE: 1, USAGE: 2, CAPABILITY: 3, CANCELED: 4 } as const;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const localesDir = path.join(here, '..', 'locales');
@@ -41,8 +39,7 @@ const cli = createCli('open-ssl')
     .intro('cli.intro')
     .option('--actor <id>', 'cli.opt.actor')
     .option('--actor-kind <kind>', 'cli.opt.actor-kind')
-    .option('--actor-source <source>', 'cli.opt.actor-source')
-    .option('--json', 'cli.opt.json');
+    .option('--actor-source <source>', 'cli.opt.actor-source');
 
 const ssl = new OpenSSL();
 
@@ -103,12 +100,8 @@ function bootstrap(options: ParsedOptions): void {
     });
 }
 
-function emit(options: ParsedOptions, ctx: CommandContext, data: unknown, human: string): void {
-    if (flag(options, 'json')) {
-        ctx.stdout(JSON.stringify({ schema: ENVELOPE_SCHEMA, ok: true, data }, null, 2));
-        return;
-    }
-    if (human) ctx.stdout(human);
+function emit(ctx: CommandContext, data: unknown, human: string): void {
+    ctx.emitResult(data, human);
 }
 
 function exitFor(code: string | undefined): number {
@@ -127,14 +120,11 @@ function exitFor(code: string | undefined): number {
     }
 }
 
-function fail(options: ParsedOptions, ctx: CommandContext, error: unknown): number {
+function fail(ctx: CommandContext, error: unknown): number {
+    // Framework errors (exit 3/4/5 envelopes) belong to `@wae/commander` dispatch.
+    if (error instanceof CliError) throw error;
     const appError = fromNativeError(error);
-    if (flag(options, 'json')) {
-        ctx.stdout(JSON.stringify({ schema: ENVELOPE_SCHEMA, ok: false, error: appError.toJSON() }, null, 2));
-    }
-    else {
-        ctx.stderr(`${appError.code}: ${appError.message}`);
-    }
+    ctx.emitFailure({ code: appError.code, message: appError.message });
     return exitFor(appError.code);
 }
 
@@ -156,11 +146,11 @@ function resolve(options: ParsedOptions, ctx: CommandContext, capability: string
         }
         bootstrap(options);
         const data = ssl.invoke(capability);
-        emit(options, ctx, data, String(data));
+        emit(ctx, data, String(data));
         return EXIT.OK;
     }
     catch (error) {
-        return fail(options, ctx, error);
+        return fail(ctx, error);
     }
 }
 
@@ -168,11 +158,11 @@ cli.command('capabilities', 'cli.cmd.capabilities').actionCtx(async (options, _a
     try {
         bootstrap(options);
         const report = ssl.capabilities();
-        emit(options, ctx, report, formatCapabilities(report.items, report.notes));
+        emit(ctx, report, formatCapabilities(report.items, report.notes));
         return EXIT.OK;
     }
     catch (error) {
-        return fail(options, ctx, error);
+        return fail(ctx, error);
     }
 });
 
@@ -180,11 +170,11 @@ cli.command('version', 'cli.cmd.version').actionCtx(async (options, _args, ctx) 
     try {
         bootstrap(options);
         const current = ssl.version();
-        emit(options, ctx, { version: current }, current);
+        emit(ctx, { version: current }, current);
         return EXIT.OK;
     }
     catch (error) {
-        return fail(options, ctx, error);
+        return fail(ctx, error);
     }
 });
 
@@ -206,11 +196,11 @@ cli.command('audit', 'cli.cmd.audit')
                 toMs: integerOption(options, 'to-ms'),
                 limit: integerOption(options, 'limit'),
             });
-            emit(options, ctx, entries, JSON.stringify(entries, null, 2));
+            emit(ctx, entries, JSON.stringify(entries, null, 2));
             return EXIT.OK;
         }
         catch (error) {
-            return fail(options, ctx, error);
+            return fail(ctx, error);
         }
     });
 
@@ -220,11 +210,11 @@ cli.command('gui', 'cli.cmd.gui')
         try {
             bootstrap(options);
             const backend = await ssl.runGui({ contentDir: stringOption(options, 'content-dir') });
-            emit(options, ctx, { backend }, `closed (${backend})`);
+            emit(ctx, { backend }, `closed (${backend})`);
             return EXIT.OK;
         }
         catch (error) {
-            return fail(options, ctx, error);
+            return fail(ctx, error);
         }
     });
 
@@ -265,11 +255,19 @@ function formatPlan(plan: AcmePlan): string {
     return lines.join('\n');
 }
 
+/** Human rendering of one persisted manual DNS action: records plus the resume command. */
+function formatActionRequired(pending: AcmeActionRequired): string {
+    const lines = pending.records.map((record) => `TXT  ${record.fqdn}  ${record.value}`);
+    lines.push('', `expires: ${new Date(pending.expiresUnix * 1000).toISOString()}`);
+    lines.push(`resume with: ${pending.nextAction.command} ${pending.nextAction.argv.join(' ')}`);
+    return lines.join('\n');
+}
+
 function formatIssue(outcome: AcmeIssueOutcome): string {
     if (outcome.dryRun) return `dry run\n${outcome.plan ? formatPlan(outcome.plan) : ''}`;
     const report = outcome.report;
     if (!report) return 'no outcome';
-    return [
+    const lines = [
         `delivered generation ${report.generation}`,
         `sans: ${report.sans.join(', ')}`,
         `fingerprint sha256: ${report.certificateSha256}`,
@@ -280,7 +278,20 @@ function formatIssue(outcome: AcmeIssueOutcome): string {
         `account: ${report.accountUrl}`,
         `order: ${report.orderUrl}`,
         `dns records removed: ${report.dnsRecordsRemoved}`,
-    ].join('\n');
+    ];
+    for (const record of report.manualRecordsToRemove ?? []) {
+        lines.push(`remove this manual TXT record: ${record.fqdn}  ${record.value}`);
+    }
+    return lines.join('\n');
+}
+
+function actionDescriptor(pending: AcmeActionRequired): ActionRequiredDescriptor {
+    return {
+        actionId: pending.actionId,
+        statusRef: pending.statusRef,
+        expiresAt: new Date(pending.expiresUnix * 1000).toISOString(),
+        nextAction: pending.nextAction,
+    };
 }
 
 cli.command('acme-plan', 'cli.cmd.acme-plan')
@@ -292,11 +303,11 @@ cli.command('acme-plan', 'cli.cmd.acme-plan')
         try {
             bootstrap(options);
             const plan = ssl.acmePlan(acmeTarget(options, args));
-            emit(options, ctx, plan, formatPlan(plan));
+            emit(ctx, plan, formatPlan(plan));
             return EXIT.OK;
         }
         catch (error) {
-            return fail(options, ctx, error);
+            return fail(ctx, error);
         }
     });
 
@@ -309,23 +320,51 @@ cli.command('acme-issue', 'cli.cmd.acme-issue')
     .option('--dns-zone-name <name>', 'cli.opt.dns-zone-name')
     .option('--project <path>', 'cli.opt.project')
     .option('--dry-run', 'cli.opt.dry-run')
-    .option('--dns-ready', 'cli.opt.dns-ready')
+    .option('--action <id>', 'cli.opt.action')
+    .interactive({
+        policy: 'optional',
+        promptKeys: { dnsRecords: 'cli.prompt.dns-records' },
+        nonInteractiveInputs: ['dns-provider', 'dns-zone-id', 'dns-zone-name', 'action'],
+        continuation: { resumeInputs: ['action'] },
+    })
     .actionCtx(async (options, args, ctx) => {
         try {
             bootstrap(options);
-            const outcome = ssl.acmeIssue({
+            const target: AcmeIssueOptions = {
                 ...acmeTarget(options, args),
                 dryRun: flag(options, 'dry-run'),
                 dnsZoneId: stringOption(options, 'dns-zone-id'),
                 dnsZoneName: stringOption(options, 'dns-zone-name'),
                 contact: stringArrayOption(options, 'contact'),
-                dnsReady: flag(options, 'dns-ready'),
-            });
-            emit(options, ctx, outcome, formatIssue(outcome));
+            };
+            const resume = stringOption(options, 'action');
+            if (resume) target.action = resume;
+            let outcome = ssl.acmeIssue(target);
+            const pending = outcome.actionRequired;
+            if (pending) {
+                const descriptor = actionDescriptor(pending);
+                if (ctx.isInteractive()) {
+                    const result = await ctx.prompt.awaitAction({
+                        ...descriptor,
+                        instructionsKey: 'cli.prompt.dns-records',
+                        args: { records: pending.records.map((record) => `TXT  ${record.fqdn}  ${record.value}`).join('\n') },
+                    });
+                    if (result === 'confirmed') {
+                        outcome = ssl.acmeIssue({ ...target, action: pending.actionId });
+                        if (!outcome.report) return ctx.actionRequired(descriptor);
+                    }
+                    else return ctx.actionRequired(descriptor);
+                }
+                else {
+                    if (!flag(options, 'json')) ctx.stderr(formatActionRequired(pending));
+                    return ctx.actionRequired(descriptor);
+                }
+            }
+            emit(ctx, outcome, formatIssue(outcome));
             return EXIT.OK;
         }
         catch (error) {
-            return fail(options, ctx, error);
+            return fail(ctx, error);
         }
     });
 
