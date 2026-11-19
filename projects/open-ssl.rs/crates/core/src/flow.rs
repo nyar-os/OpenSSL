@@ -11,8 +11,16 @@
 //! 6. 下载证书链，拆分叶子与中间证书，经 `delivery` 原子交付。
 //! 7. 无论成功与否，只删除本任务创建的 TXT 记录。
 //!
-//! 传输与 DNS 都由调用方注入，因此同一实现既能在 loopback fixture 上验证成功、失败与
-//! 恢复，也能用 [`crate::tls::HttpsTransport`] 与 `Cloudflare` 打真实 CA。
+//! 传输由调用方注入，DNS 的驱动方式由入口函数决定：
+//!
+//! - [`issue_api`]：provider 直接落位记录，单 run 走完全部状态机。
+//! - [`issue_manual`]：人工放置记录，拆成两次运行。第一次（不带 action id）取到
+//!   每条挑战的 TXT 指引后落盘 [`crate::state::PendingAction`] 并返回
+//!   [`FlowOutcome::ActionRequired`]，**不回复任何挑战**；操作者放好记录后，第二次带
+//!   `--action <actionId>` 续跑，先校验项目输入指纹、阶段与到期，再对同一订单回复挑战、
+//!   轮询、finalize 并交付。恢复消费成功后动作记录即删除，重复续跑会被明确拒绝。
+//!
+//! 本模块不做任何终端交互：提示与确认属于宿主 CLI 层，native 侧只返回值或类型化结果。
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +36,7 @@ use crate::{
     errors::{Error, ErrorCode, Result},
     keys,
     lock::ProjectLock,
-    state::{AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, StateStore, plan_issue},
+    state::{AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, PendingAction, StateStore, TxtInstruction, plan_issue},
     x509::{Certificate, pem_bundle, pem_encode},
 };
 
@@ -40,6 +48,9 @@ pub const fn directory_url(kind: DirectoryKind) -> &'static str {
         DirectoryKind::Production => "https://acme-v02.api.letsencrypt.org/directory",
     }
 }
+
+/// manual 动作从 prepare 起允许续跑的时长。过期后必须重新 prepare 获取新指引。
+pub const ACTION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// 一次真实签发的输入。
 #[derive(Debug, Clone)]
@@ -60,6 +71,41 @@ pub struct FlowOptions<'a> {
     pub poll_delay: Duration,
 }
 
+/// manual 路径一次运行的结果。
+#[derive(Debug)]
+pub enum FlowOutcome {
+    /// 证书已交付（resume 运行的结果）。
+    Report(IssueReport),
+    /// 领域已准备，等待外部人工操作后用 `--action` 续跑（prepare 运行的结果）。
+    ActionRequired(ActionRequired),
+}
+
+/// 一条续跑指令：可复跑的命令名与字面 argv（不是 shell 串）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextAction {
+    /// 复跑的命令名。
+    pub command: String,
+    /// 复跑所需的字面参数，含 `--action <actionId>` 与 identifier。
+    pub argv: Vec<String>,
+}
+
+/// manual 路径第一次运行的返回：待人工放置的记录与续跑引用。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRequired {
+    /// 稳定动作 id，第二次运行以 `--action <actionId>` 提交。
+    pub action_id: String,
+    /// 领域状态引用（订单 id）。
+    pub status_ref: String,
+    /// 续跑截止的 Unix 秒。
+    pub expires_unix: u64,
+    /// 需要操作者逐条放置的 TXT 记录。
+    pub records: Vec<TxtInstruction>,
+    /// 结构化续跑指令，机器消费者不必解析任何人类文本。
+    pub next_action: NextAction,
+}
+
 /// 一次成功签发的报告。
 ///
 /// 只包含公开标识、有效期、generation 身份与受控文件位置，不含私钥正文、token 或 key
@@ -75,6 +121,9 @@ pub struct IssueReport {
     pub generation: String,
     /// 本次实际删除的 TXT 记录数。
     pub dns_records_removed: usize,
+    /// manual 路径交付后仍需操作者从 DNS 控制台删除的记录。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manual_records_to_remove: Vec<TxtInstruction>,
     /// 叶子证书里的 SAN。
     pub sans: Vec<String>,
     /// 叶子 DER 的 SHA-256 指纹，十六进制小写。
@@ -87,30 +136,38 @@ pub struct IssueReport {
     pub paths: crate::delivery::GenerationPaths,
 }
 
-/// 执行一次真实签发。
+/// 执行一次 API provider 驱动的真实签发：provider 自己落位记录，单 run 完成。
 ///
 /// 锁覆盖完整流程。失败时已发布的 TXT 仍会被清理，账户与订单状态保留供续跑。
-pub fn issue<T: Transport, D: DnsProvider>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, dns: &mut D) -> Result<IssueReport> {
+pub fn issue_api<T: Transport, D: DnsProvider>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, dns: &mut D) -> Result<IssueReport> {
     let _lock = ProjectLock::acquire(project)?;
     let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
     let store = StateStore::new(project);
-
     let mut published: Vec<TxtRecord> = Vec::new();
-    let outcome = run(project, options, transport, dns, &store, &plan, &mut published);
+    let outcome = run_api(project, options, transport, dns, &store, &plan, &mut published);
     let removed = cleanup(dns, &published);
     let report = outcome?;
     Ok(IssueReport { dns_records_removed: removed, ..report })
 }
 
-fn run<T: Transport, D: DnsProvider>(
-    project: &ProjectRoot,
-    options: &FlowOptions<'_>,
-    transport: T,
-    dns: &mut D,
-    store: &StateStore,
-    plan: &IssuePlan,
-    published: &mut Vec<TxtRecord>,
-) -> Result<IssueReport> {
+/// 执行一次 manual 路径的运行。
+///
+/// `action` 为 `None` 时是 prepare：取到全部 TXT 指引、落盘 [`PendingAction`] 并返回
+/// [`FlowOutcome::ActionRequired`]，绝不回复任何挑战。带 id 时是 resume：先校验项目输入
+/// 指纹、阶段与到期，再对同一订单回复挑战、轮询、finalize 并交付；消费成功后动作删除，
+/// 重复续跑会被明确拒绝。
+pub fn issue_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, action: Option<&str>) -> Result<FlowOutcome> {
+    let _lock = ProjectLock::acquire(project)?;
+    let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
+    let store = StateStore::new(project);
+    match action {
+        None => prepare_manual(project, options, transport, &store, &plan),
+        Some(id) => resume_manual(project, options, transport, &store, &plan, id).map(FlowOutcome::Report),
+    }
+}
+
+/// 建立账户与订单上下文：账户复用/新建、订单复用/新建，返回可继续推进的状态。
+fn bootstrap_order<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, order_id: &str) -> Result<(AcmeClient<T>, String, OrderState, crate::acme::Order)> {
     let account_key = keys::account_key(project, options.kind)?;
     let thumbprint = account_key.thumbprint();
     let mut client = AcmeClient::bootstrap(transport, account_key, options.directory_url)?;
@@ -139,12 +196,11 @@ fn run<T: Transport, D: DnsProvider>(
         }
     };
 
-    let order_id = order_id(options.kind, options.identifiers);
-    let resumed = store.order(&order_id)?.filter(|order| order.phase.is_open() && order.account_url == account_url);
+    let resumed = store.order(order_id)?.filter(|order| order.phase.is_open() && order.account_url == account_url);
     let mut order_state = match &resumed {
         Some(state) => state.clone(),
         None => OrderState {
-            id: order_id.clone(),
+            id: order_id.to_owned(),
             kind: options.kind,
             account_url: account_url.clone(),
             order_url: None,
@@ -168,6 +224,22 @@ fn run<T: Transport, D: DnsProvider>(
             order
         }
     };
+    Ok((client, account_url, order_state, order))
+}
+
+/// API provider 路径：发布 DNS、回复挑战、轮询、finalize、交付。
+#[allow(clippy::too_many_arguments)]
+fn run_api<T: Transport, D: DnsProvider>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    transport: T,
+    dns: &mut D,
+    store: &StateStore,
+    plan: &IssuePlan,
+    published: &mut Vec<TxtRecord>,
+) -> Result<IssueReport> {
+    let id = order_id(options.kind, options.identifiers);
+    let (mut client, account_url, mut order_state, order) = bootstrap_order(project, options, transport, store, &id)?;
 
     // 授权：发布 DNS、回复挑战、轮询到 valid。
     for (index, url) in order.authorizations.iter().enumerate() {
@@ -193,23 +265,159 @@ fn run<T: Transport, D: DnsProvider>(
         store.save_order(&order_state)?;
 
         client.respond_challenge(&challenge.challenge.url)?;
-        poll_authorization(&mut client, &url, options.poll_attempts, options.poll_delay)?;
+        poll_authorization(&mut client, url, options.poll_attempts, options.poll_delay)?;
         store_authorization(&mut order_state, index, AuthorizationState { status: "valid".to_owned(), ..state });
         store.save_order(&order_state)?;
     }
     order_state.phase = OrderPhase::Authorized;
     store.save_order(&order_state)?;
 
+    finalize_and_deliver(project, options, &mut client, account_url, store, plan, &id, &mut order_state, order, Vec::new())
+}
+
+/// manual prepare：取到全部 TXT 指引并落盘，不回复任何挑战。
+fn prepare_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, plan: &IssuePlan) -> Result<FlowOutcome> {
+    let id = order_id(options.kind, options.identifiers);
+    let (mut client, _account_url, mut order_state, order) = bootstrap_order(project, options, transport, store, &id)?;
+
+    let mut records: Vec<TxtInstruction> = Vec::new();
+    for (index, url) in order.authorizations.iter().enumerate() {
+        let already_valid = order_state.authorizations.get(index).is_some_and(|state| state.status == "valid");
+        if already_valid {
+            continue;
+        }
+        let challenge = client.dns_challenge(url)?;
+        let fqdn = challenge.record_fqdn();
+        let value = challenge.txt_value();
+        records.push(TxtInstruction { fqdn: fqdn.clone(), value: value.clone() });
+        store_authorization(
+            &mut order_state,
+            index,
+            AuthorizationState {
+                url: url.clone(),
+                identifier: challenge.identifier.clone(),
+                wildcard: challenge.wildcard,
+                record_fqdn: fqdn,
+                txt_digest: value,
+                status: "pending".to_owned(),
+                record_id: None,
+            },
+        );
+    }
+    order_state.phase = OrderPhase::AwaitingDns;
+    store.save_order(&order_state)?;
+
+    let now = unix_now();
+    let expires_unix = now + ACTION_TTL.as_secs();
+    let action = PendingAction {
+        id: action_id(&id),
+        kind: options.kind,
+        order_id: id.clone(),
+        input_fingerprint: input_fingerprint(options.kind, plan),
+        records: records.clone(),
+        created_unix: now,
+        expires_unix,
+    };
+    store.save_action(&action)?;
+
+    let mut argv = vec!["--action".to_owned(), action.id.clone()];
+    argv.extend(plan.identifiers.iter().cloned());
+    Ok(FlowOutcome::ActionRequired(ActionRequired {
+        action_id: action.id,
+        status_ref: id,
+        expires_unix,
+        records,
+        next_action: NextAction { command: "acme-issue".to_owned(), argv },
+    }))
+}
+
+/// manual resume：校验动作后对同一订单回复挑战、轮询并交付。
+fn resume_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, plan: &IssuePlan, requested_id: &str) -> Result<IssueReport> {
+    let action = store
+        .action(requested_id)?
+        .ok_or_else(|| Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 不存在或已被消费，请重新运行不带 `--action` 的签发获取指引")))?;
+
+    if action.kind != options.kind {
+        return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 属于 `{}` directory，与本次请求不一致", action.kind.as_str())));
+    }
+    let fingerprint = input_fingerprint(options.kind, plan);
+    if action.input_fingerprint != fingerprint {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            format!("动作 `{requested_id}` 的输入指纹与当前请求（provider、identifier）不匹配，拒绝跨输入续跑"),
+        ));
+    }
+    if unix_now() > action.expires_unix {
+        return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 已过期，请重新 prepare 获取新的 TXT 指引")));
+    }
+
+    let order_state = store
+        .order(&action.order_id)?
+        .ok_or_else(|| Error::new(ErrorCode::Protocol, format!("动作 `{requested_id}` 关联的订单状态 `{}` 已不存在", action.order_id)))?;
+    if order_state.phase != OrderPhase::AwaitingDns {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            format!("动作 `{requested_id}` 关联的订单当前阶段是 `{}`，不处于等待人工 DNS 的状态", order_state.phase.as_str()),
+        ));
+    }
+
+    let id = action.order_id.clone();
+    let (mut client, account_url, mut order_state, order) = bootstrap_order(project, options, transport, store, &id)?;
+
+    // 对每条尚未 valid 的授权：重取 challenge 确认记录名一致，回复并轮询。
+    for (index, url) in order.authorizations.iter().enumerate() {
+        let state = order_state
+            .authorizations
+            .get(index)
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorCode::Protocol, "订单状态缺少 prepare 阶段应已落盘的授权记录"))?;
+        if state.status == "valid" {
+            continue;
+        }
+        let challenge = client.dns_challenge(url)?;
+        if challenge.record_fqdn() != state.record_fqdn {
+            return Err(Error::new(
+                ErrorCode::Protocol,
+                format!("授权 `{url}` 的记录名与 prepare 时落盘的不一致，拒绝继续"),
+            ));
+        }
+        client.respond_challenge(&challenge.challenge.url)?;
+        poll_authorization(&mut client, url, options.poll_attempts, options.poll_delay)?;
+        store_authorization(&mut order_state, index, AuthorizationState { status: "valid".to_owned(), ..state });
+        store.save_order(&order_state)?;
+    }
+    order_state.phase = OrderPhase::Authorized;
+    store.save_order(&order_state)?;
+
+    let report = finalize_and_deliver(project, options, &mut client, account_url, store, plan, &id, &mut order_state, order, action.records.clone())?;
+    store.delete_action(requested_id)?;
+    Ok(report)
+}
+
+/// 授权完成后的共同尾部：CSR、finalize、下载、SAN 核验、交付。
+#[allow(clippy::too_many_arguments)]
+fn finalize_and_deliver<T: Transport>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    client: &mut AcmeClient<T>,
+    account_url: String,
+    store: &StateStore,
+    plan: &IssuePlan,
+    order_id: &str,
+    order_state: &mut OrderState,
+    order: crate::acme::Order,
+    manual_records_to_remove: Vec<TxtInstruction>,
+) -> Result<IssueReport> {
     // 叶子私钥与 CSR。
-    let leaf_key = keys::order_key(project, &order_id)?;
+    let leaf_key = keys::order_key(project, order_id)?;
     let common_name = plan.identifiers.iter().find(|name| !name.starts_with("*.")).unwrap_or(&plan.identifiers[0]).clone();
     let csr_der = csr::create(&leaf_key, &common_name, options.identifiers);
     order_state.csr_sha256 = Some(sha256_hex(&csr_der));
-    store.save_order(&order_state)?;
+    store.save_order(order_state)?;
 
     let order = client.finalize(&order, &csr_der)?;
     order_state.phase = OrderPhase::Submitted;
-    store.save_order(&order_state)?;
+    store.save_order(order_state)?;
     let order = client.poll_order(&order.url, options.poll_attempts, options.poll_delay)?;
     let certificate_url = order
         .certificate
@@ -239,7 +447,7 @@ fn run<T: Transport, D: DnsProvider>(
     let generation = delivery.commit(staged)?;
     order_state.phase = OrderPhase::Issued;
     order_state.certificate_sha256 = Some(generation.certificate_sha256.clone());
-    store.save_order(&order_state)?;
+    store.save_order(order_state)?;
 
     let paths = delivery.paths(&generation.id);
     Ok(IssueReport {
@@ -247,6 +455,7 @@ fn run<T: Transport, D: DnsProvider>(
         order_url: order.url,
         generation: generation.id,
         dns_records_removed: 0,
+        manual_records_to_remove,
         sans: leaf.extensions.dns_names.clone(),
         certificate_sha256: generation.certificate_sha256,
         not_before_unix: crate::delivery::epoch_seconds(leaf.not_before),
@@ -300,6 +509,27 @@ fn cleanup<D: DnsProvider>(dns: &mut D, records: &[TxtRecord]) -> usize {
 pub fn order_id(kind: DirectoryKind, identifiers: &[String]) -> String {
     let mut material = format!("{}:", kind.as_str());
     for identifier in identifiers {
+        material.push_str(identifier);
+        material.push('\n');
+    }
+    sha256_hex(material.as_bytes())[..16].to_owned()
+}
+
+/// 一个订单对应的 manual 动作的稳定 id。
+///
+/// 同一订单同一时刻只有一个待执行动作；重新 prepare 会覆盖它。
+#[must_use]
+pub fn action_id(order: &str) -> String {
+    format!("dns01-{order}")
+}
+
+/// 绑定续跑合法性的输入指纹：directory、provider 与规范化 identifier 集的摘要。
+///
+/// 恢复时由当前请求重算比对。它防的是拿错项目/改过输入的误用，不是防篡改认证。
+#[must_use]
+pub fn input_fingerprint(kind: DirectoryKind, plan: &IssuePlan) -> String {
+    let mut material = format!("{}:{}:", kind.as_str(), plan.dns_provider);
+    for identifier in &plan.identifiers {
         material.push_str(identifier);
         material.push('\n');
     }

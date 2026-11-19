@@ -54,6 +54,8 @@ use crate::{
 const ACCOUNTS_DIR: &str = "accounts";
 /// 订单状态所在的子目录。
 const ORDERS_DIR: &str = "orders";
+/// 待人工执行动作所在的子目录。
+const ACTIONS_DIR: &str = "actions";
 /// 状态文件的扩展名。
 const JSON_SUFFIX: &str = ".json";
 /// 原子写的临时文件后缀。
@@ -136,6 +138,9 @@ pub struct AuthorizationState {
 pub enum OrderPhase {
     /// 已计划，尚未向 CA 提交订单。
     Planned,
+    /// manual DNS 指引已落盘，等待操作者放置记录后用 `--action` 续跑。
+    #[serde(rename = "awaiting-dns")]
+    AwaitingDns,
     /// 授权已经通过验证，尚未提交 CSR。
     Authorized,
     /// CSR 已提交，等待 CA 出证。
@@ -152,6 +157,7 @@ impl OrderPhase {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Planned => "planned",
+            Self::AwaitingDns => "awaiting-dns",
             Self::Authorized => "authorized",
             Self::Submitted => "submitted",
             Self::Issued => "issued",
@@ -164,6 +170,7 @@ impl OrderPhase {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "planned" => Some(Self::Planned),
+            "awaiting-dns" => Some(Self::AwaitingDns),
             "authorized" => Some(Self::Authorized),
             "submitted" => Some(Self::Submitted),
             "issued" => Some(Self::Issued),
@@ -175,7 +182,7 @@ impl OrderPhase {
     /// 该阶段是否还需要继续推进（既未出证，也未失败）。
     #[must_use]
     pub const fn is_open(self) -> bool {
-        matches!(self, Self::Planned | Self::Authorized | Self::Submitted)
+        matches!(self, Self::Planned | Self::AwaitingDns | Self::Authorized | Self::Submitted)
     }
 }
 
@@ -188,7 +195,7 @@ impl<'de> Deserialize<'de> for OrderPhase {
             type Value = OrderPhase;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("`planned`, `authorized`, `submitted`, `issued` 或 `failed`")
+                formatter.write_str("`planned`, `awaiting-dns`, `authorized`, `submitted`, `issued` 或 `failed`")
             }
 
             fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<OrderPhase, E> {
@@ -227,6 +234,44 @@ pub struct OrderState {
     pub phase: OrderPhase,
     /// 最近一次写入的 Unix 秒。
     pub updated_unix: u64,
+}
+
+/// 一条需要操作者人工放置的 dns-01 TXT 记录。
+///
+/// 这是给人类的指引数据，不是授权凭证：恢复时领域层仍会向 CA 发起真实校验。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxtInstruction {
+    /// 记录名，例如 `_acme-challenge.example.test`。
+    pub fqdn: String,
+    /// TXT 值（dns-01 摘要）。
+    pub value: String,
+}
+
+/// 一个等待外部人工操作、可跨进程续跑的领域动作。
+///
+/// 只保存恢复所需的最小上下文：所属订单、输入指纹、阶段指引与到期时间。**不保存**
+/// DNS token、账户私钥或任何凭证引用之外的秘密。`input_fingerprint` 绑定
+/// directory、provider 与规范化后的 identifier 集，恢复时重算比对，防止拿错项目、
+/// 错订单或改过输入的状态继续跑。状态文件可被本地编辑，因此指纹只是完整性检查，
+/// 不是防篡改认证。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAction {
+    /// 稳定动作 id，同时是状态文件名的主干。
+    pub id: String,
+    /// 该动作所属的 directory。
+    pub kind: DirectoryKind,
+    /// 关联的订单 id（`statusRef`）。
+    pub order_id: String,
+    /// 输入指纹：directory、provider 与 identifier 集的摘要。
+    pub input_fingerprint: String,
+    /// 需要人工放置的 TXT 记录。
+    pub records: Vec<TxtInstruction>,
+    /// 首次写入的 Unix 秒。
+    pub created_unix: u64,
+    /// 续跑截止的 Unix 秒，过期后必须重新 prepare。
+    pub expires_unix: u64,
 }
 
 /// 绑定一个项目状态目录的状态读写入口。
@@ -330,12 +375,57 @@ impl StateStore {
         Ok(self.orders()?.into_iter().find(|order| order.kind == kind && order.phase.is_open()))
     }
 
+    /// 原子写入一个待人工执行的动作。
+    ///
+    /// 写入前校验 id 形状，且 `id` 必须以关联的订单 id 为主干，避免动作与订单脱钩。
+    pub fn save_action(&self, action: &PendingAction) -> Result<()> {
+        if !valid_id(&action.id) {
+            return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 id `{}` 不是合法的状态文件名", action.id)));
+        }
+        let file = self.actions_dir().join(format!("{}{JSON_SUFFIX}", action.id));
+        self.write_atomic(&file, action)
+    }
+
+    /// 读取一个待人工执行的动作。
+    ///
+    /// 文件不存在返回 `Ok(None)`；坏 JSON 或文件名与 `id` 不一致按 [`ErrorCode::Protocol`] 报错。
+    pub fn action(&self, id: &str) -> Result<Option<PendingAction>> {
+        if !valid_id(id) {
+            return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 id `{id}` 不是合法的状态文件名")));
+        }
+        let file = self.actions_dir().join(format!("{id}{JSON_SUFFIX}"));
+        let Some(action) = read_state::<PendingAction>(&file, "动作状态")? else {
+            return Ok(None);
+        };
+        if action.id != id {
+            return Err(Error::new(ErrorCode::Protocol, format!("动作状态 `{}` 里的 id 与文件名不一致", file.display())));
+        }
+        Ok(Some(action))
+    }
+
+    /// 删除一个已消费的动作。文件不存在视为已删除。
+    pub fn delete_action(&self, id: &str) -> Result<()> {
+        if !valid_id(id) {
+            return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 id `{id}` 不是合法的状态文件名")));
+        }
+        let file = self.actions_dir().join(format!("{id}{JSON_SUFFIX}"));
+        match fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error(&file, "删除动作状态", error)),
+        }
+    }
+
     fn accounts_dir(&self) -> PathBuf {
         self.state_dir.join(ACCOUNTS_DIR)
     }
 
     fn orders_dir(&self) -> PathBuf {
         self.state_dir.join(ORDERS_DIR)
+    }
+
+    fn actions_dir(&self) -> PathBuf {
+        self.state_dir.join(ACTIONS_DIR)
     }
 
     fn order_file(&self, id: &str) -> Result<PathBuf> {

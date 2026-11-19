@@ -18,8 +18,8 @@ use std::{
 use boost_net::http::HttpTransport;
 use open_ssl_core::{
     der::{Tag, Writer, oids},
-    dns::{DnsProvider, Manual, Prompter, RecordHandle, TxtRecord},
-    flow::{self, FlowOptions},
+    dns::{DnsProvider, RecordHandle, TxtRecord},
+    flow::{self, FlowOptions, FlowOutcome},
     x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, pem_encode},
 };
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
@@ -257,6 +257,22 @@ fn options<'a>(base: &'a str, identifiers: &'a [String]) -> FlowOptions<'a> {
     }
 }
 
+/// 取出交付报告；prepare 结果出现在这里就是测试期望错误。
+fn delivered(outcome: FlowOutcome) -> flow::IssueReport {
+    match outcome {
+        FlowOutcome::Report(report) => report,
+        FlowOutcome::ActionRequired(action) => panic!("expected a delivered report, got action {}", action.action_id),
+    }
+}
+
+/// 取出 prepare 结果。
+fn pending_action(outcome: FlowOutcome) -> flow::ActionRequired {
+    match outcome {
+        FlowOutcome::ActionRequired(action) => action,
+        FlowOutcome::Report(_) => panic!("expected an action-required outcome, got a delivered report"),
+    }
+}
+
 #[test]
 fn full_issuance_delivers_a_real_generation_and_cleans_dns() {
     let (project, root) = project_root("full");
@@ -267,7 +283,7 @@ fn full_issuance_delivers_a_real_generation_and_cleans_dns() {
 
     let server = mock::MockServer::start(script(chain, Arc::new(AtomicBool::new(false))));
     let mut dns = FakeDns::new();
-    let report = flow::issue(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("issuance succeeds");
+    let report = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("issuance succeeds");
 
     assert_eq!(report.account_url, server.url("/account/42"));
     assert_eq!(report.order_url, server.url("/order/1"));
@@ -305,10 +321,10 @@ fn second_run_reuses_the_account_and_issues_a_new_generation() {
     let authz_valid = Arc::new(AtomicBool::new(false));
     let server = mock::MockServer::start(script(chain.clone(), Arc::clone(&authz_valid)));
     let mut dns = FakeDns::new();
-    let first = flow::issue(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("first run");
+    let first = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("first run");
 
     authz_valid.store(false, Ordering::SeqCst);
-    let second = flow::issue(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("second run");
+    let second = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("second run");
     assert_ne!(first.generation, second.generation, "每次成功交付都是新的一代");
 
     let accounts = server.requests().iter().filter(|request| request.route() == "/new-account").count();
@@ -343,60 +359,108 @@ fn failure_cleans_the_records_it_published() {
     });
     let server = mock::MockServer::start(failing);
     let mut dns = FakeDns::new();
-    let error = flow::issue(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns)
+    let error = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns)
         .expect_err("order polling must time out");
     assert_eq!(error.code(), open_ssl_core::ErrorCode::Network);
     assert!(dns.records.is_empty(), "失败路径同样要精确清理已发布的 TXT");
     let _ = fs::remove_dir_all(root);
 }
 
-#[derive(Clone)]
-struct RecordingPrompter(Arc<std::sync::Mutex<Vec<String>>>);
-
-impl Prompter for RecordingPrompter {
-    fn await_confirmation(&mut self, message: &str) -> open_ssl_core::Result<()> {
-        self.0.lock().expect("prompt lock").push(message.to_owned());
-        Ok(())
-    }
-}
-
-#[test]
-fn manual_provider_prompts_the_operator_and_still_delivers_without_secrets() {
-    // 交互式模式的核心承诺：项目根本没有 `.secrets` 也能走完整签发，
-    // 每条 TXT 逐一向操作者要添加与删除确认。
-    let root = std::env::temp_dir().join(format!("open-ssl-flow-manual-{}", std::process::id()));
+/// 不带 `.secrets` 的裸项目：manual 双 run 的核心承诺是不需要任何凭证。
+fn bare_project(tag: &str) -> (open_ssl_core::dns::credentials::ProjectRoot, PathBuf) {
+    let root = std::env::temp_dir().join(format!("open-ssl-flow-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("bare project root");
     let project = open_ssl_core::dns::credentials::ProjectRoot::new(&root).expect("project root");
     assert!(!root.join(".secrets").exists(), "测试项目不得携带秘密文件");
+    (project, root)
+}
 
+fn manual_options<'a>(directory: &'a str, identifiers: &'a [String]) -> FlowOptions<'a> {
+    FlowOptions {
+        kind: open_ssl_core::state::DirectoryKind::Staging,
+        directory_url: directory,
+        dns_provider: "manual",
+        identifiers,
+        contact: &[],
+        poll_attempts: 4,
+        poll_delay: Duration::ZERO,
+    }
+}
+
+#[test]
+fn manual_prepare_returns_instructions_without_responding() {
+    // prepare 只取指引并落盘：绝不回复任何挑战，也不要求 `.secrets`。
+    let (project, root) = bare_project("manual-prepare");
+    let identifiers = vec!["example.test".to_owned(), "*.example.test".to_owned()];
+    let server = mock::MockServer::start(script("not needed".to_owned(), Arc::new(AtomicBool::new(false))));
+    let directory = server.url("/directory");
+
+    let outcome = flow::issue_manual(&project, &manual_options(&directory, &identifiers), HttpTransport::new(), None).expect("prepare succeeds");
+    let action = pending_action(outcome);
+
+    assert_eq!(action.records.len(), 2, "裸域与泛域名各需一条指引");
+    assert!(action.records.iter().all(|record| record.fqdn == "_acme-challenge.example.test"), "两条记录共享同一记录名");
+    let values: std::collections::BTreeSet<&str> = action.records.iter().map(|record| record.value.as_str()).collect();
+    assert_eq!(values.len(), 2, "两条挑战值必须不同");
+    assert_eq!(action.next_action.command, "acme-issue");
+    assert_eq!(&action.next_action.argv[..2], ["--action", action.action_id.as_str()], "续跑 argv 必须以 --action 开头");
+    assert!(server.requests().iter().all(|request| !request.route().starts_with("/challenge")), "prepare 阶段绝不回复挑战");
+
+    let store = open_ssl_core::state::StateStore::new(&project);
+    let order_id = flow::order_id(open_ssl_core::state::DirectoryKind::Staging, &identifiers);
+    let order = store.order(&order_id).expect("order state").expect("order persisted");
+    assert_eq!(order.phase, open_ssl_core::state::OrderPhase::AwaitingDns);
+    let stored = store.action(&action.action_id).expect("action readable").expect("action persisted");
+    assert_eq!(stored.order_id, order_id);
+    assert!(stored.created_unix <= stored.expires_unix);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn manual_resume_delivers_and_consumes_the_action() {
+    // resume 带 action id 续跑同一订单：CA 做真实校验，交付后动作被消费。
+    let (project, root) = bare_project("manual-resume");
     let identifiers = vec!["example.test".to_owned(), "*.example.test".to_owned()];
     let id = flow::order_id(open_ssl_core::state::DirectoryKind::Staging, &identifiers);
     let placed = open_ssl_core::keys::order_key(&project, &id).expect("pre-place leaf key");
     let chain = chain_for(placed.verifying_key());
     let server = mock::MockServer::start(script(chain, Arc::new(AtomicBool::new(false))));
-
-    let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut dns = Manual::new(RecordingPrompter(Arc::clone(&prompts)));
     let directory = server.url("/directory");
-    let flow_options = FlowOptions {
-        kind: open_ssl_core::state::DirectoryKind::Staging,
-        directory_url: &directory,
-        dns_provider: "manual",
-        identifiers: &identifiers,
-        contact: &[],
-        poll_attempts: 4,
-        poll_delay: Duration::ZERO,
-    };
-    let report = flow::issue(&project, &flow_options, HttpTransport::new(), &mut dns).expect("manual issuance succeeds");
+    let flow_options = manual_options(&directory, &identifiers);
 
-    let log = prompts.lock().expect("prompt lock").clone();
-    assert_eq!(log.len(), 4, "两条添加与两条删除提示都必须逐条交互：{log:?}");
-    assert!(log[0].contains("_acme-challenge.example.test"), "添加提示必须给出记录名：{}", log[0]);
-    assert!(log.iter().all(|entry| !entry.contains("test-token")), "提示不得泄漏任何凭证");
-    assert!(dns.pending_records().is_empty(), "确认后 manual 不再持有记录");
-    assert_eq!(report.dns_records_removed, 2);
-    assert!(report.paths.certificate.is_file(), "manual 模式同样交付真实一代");
+    let action = pending_action(flow::issue_manual(&project, &flow_options, HttpTransport::new(), None).expect("prepare succeeds"));
+    let report = delivered(flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id)).expect("resume succeeds"));
+
+    assert_eq!(report.sans, vec!["example.test".to_owned(), "*.example.test".to_owned()]);
+    assert_eq!(report.manual_records_to_remove, action.records, "交付后必须把待删除指引回传给操作者");
+    assert!(report.paths.certificate.is_file(), "resume 同样交付真实一代");
+    let responded = server.requests().iter().filter(|request| request.route().starts_with("/challenge")).count();
+    assert_eq!(responded, 2, "resume 必须逐条回复挑战");
+
+    let store = open_ssl_core::state::StateStore::new(&project);
+    assert!(store.action(&action.action_id).expect("action lookup").is_none(), "成功续跑后动作必须被消费");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn manual_resume_rejects_unknown_and_expired_actions() {
+    let (project, root) = bare_project("manual-reject");
+    let identifiers = vec!["example.test".to_owned(), "*.example.test".to_owned()];
+    let server = mock::MockServer::start(script("not needed".to_owned(), Arc::new(AtomicBool::new(false))));
+    let directory = server.url("/directory");
+    let flow_options = manual_options(&directory, &identifiers);
+    let action = pending_action(flow::issue_manual(&project, &flow_options, HttpTransport::new(), None).expect("prepare succeeds"));
+
+    let unknown = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some("dns01-deadbeefdeadbeef")).expect_err("unknown action must be rejected");
+    assert_eq!(unknown.code(), open_ssl_core::ErrorCode::InvalidArgument);
+
+    let store = open_ssl_core::state::StateStore::new(&project);
+    let mut expired = store.action(&action.action_id).expect("action").expect("persisted");
+    expired.expires_unix = 1;
+    store.save_action(&expired).expect("rewrite action");
+    let error = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id)).expect_err("expired action must be rejected");
+    assert_eq!(error.code(), open_ssl_core::ErrorCode::InvalidArgument);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -406,7 +470,7 @@ fn a_bogus_chain_is_rejected_before_delivery() {
     let identifiers = vec!["example.test".to_owned(), "*.example.test".to_owned()];
     let server = mock::MockServer::start(script("not a certificate chain".to_owned(), Arc::new(AtomicBool::new(false))));
     let mut dns = FakeDns::new();
-    let error = flow::issue(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns)
+    let error = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns)
         .expect_err("a chain without a parseable leaf must fail");
     assert_eq!(error.code(), open_ssl_core::ErrorCode::Protocol);
     assert!(dns.records.is_empty());
