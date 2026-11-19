@@ -274,6 +274,13 @@ fn full_issuance_delivers_a_real_generation_and_cleans_dns() {
     assert_eq!(report.dns_records_removed, 2, "两条同名不同值的 TXT 都必须被精确删除");
     assert!(dns.records.is_empty(), "provider 侧不得留下残余记录");
 
+    assert_eq!(report.sans, vec!["example.test".to_owned(), "*.example.test".to_owned()], "报告必须携带叶子 SAN");
+    assert_eq!(report.certificate_sha256.len(), 64, "指纹是完整 SHA-256");
+    assert!(report.not_before_unix < report.not_after_unix, "有效期必须有序");
+    assert!(report.paths.certificate.is_file(), "报告必须指向已交付的证书文件");
+    assert!(report.paths.chain.is_file(), "报告必须指向已交付的链文件");
+    assert!(report.paths.private_key.is_file(), "报告必须指向受控的私钥位置");
+
     let delivery = open_ssl_core::delivery::Delivery::new(&project);
     let generation = delivery.current().expect("current readable").expect("a generation was committed");
     assert_eq!(generation.id, report.generation);

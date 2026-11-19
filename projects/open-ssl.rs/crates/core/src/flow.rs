@@ -62,7 +62,8 @@ pub struct FlowOptions<'a> {
 
 /// 一次成功签发的报告。
 ///
-/// 只包含公开标识与 generation 身份，不含私钥、token 或 key authorization。
+/// 只包含公开标识、有效期、generation 身份与受控文件位置，不含私钥正文、token 或 key
+/// authorization。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueReport {
@@ -74,6 +75,16 @@ pub struct IssueReport {
     pub generation: String,
     /// 本次实际删除的 TXT 记录数。
     pub dns_records_removed: usize,
+    /// 叶子证书里的 SAN。
+    pub sans: Vec<String>,
+    /// 叶子 DER 的 SHA-256 指纹，十六进制小写。
+    pub certificate_sha256: String,
+    /// 有效期起点（Unix 秒）。
+    pub not_before_unix: u64,
+    /// 有效期终点（Unix 秒）。
+    pub not_after_unix: u64,
+    /// 证书、链与私钥的受控位置。
+    pub paths: crate::delivery::GenerationPaths,
 }
 
 /// 执行一次真实签发。
@@ -231,7 +242,18 @@ fn run<T: Transport, D: DnsProvider>(
     order_state.certificate_sha256 = Some(generation.certificate_sha256.clone());
     store.save_order(&order_state)?;
 
-    Ok(IssueReport { account_url, order_url: order.url, generation: generation.id, dns_records_removed: 0 })
+    let paths = delivery.paths(&generation.id);
+    Ok(IssueReport {
+        account_url,
+        order_url: order.url,
+        generation: generation.id,
+        dns_records_removed: 0,
+        sans: leaf.extensions.dns_names.clone(),
+        certificate_sha256: generation.certificate_sha256,
+        not_before_unix: crate::delivery::epoch_seconds(leaf.not_before),
+        not_after_unix: crate::delivery::epoch_seconds(leaf.not_after),
+        paths,
+    })
 }
 
 fn poll_authorization<T: Transport>(client: &mut AcmeClient<T>, url: &str, attempts: usize, delay: Duration) -> Result<()> {

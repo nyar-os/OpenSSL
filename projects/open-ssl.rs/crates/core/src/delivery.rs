@@ -111,6 +111,18 @@ pub struct Generation {
     pub created_unix: u64,
 }
 
+/// 已提交一代的落盘位置。路径是受控句柄，不含私钥正文。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationPaths {
+    /// 叶子证书 PEM。
+    pub certificate: PathBuf,
+    /// 中间证书链 PEM。
+    pub chain: PathBuf,
+    /// 叶子私钥 PEM 的受控位置。
+    pub private_key: PathBuf,
+}
+
 /// 已经通过全部校验、但还没有切换成当前代的暂存结果。
 ///
 /// 只能由 [`Delivery::stage`] 产生。没有交给 [`Delivery::commit`] 就离开作用域的暂存目录会被
@@ -279,6 +291,16 @@ impl Delivery {
         self.state_dir.join(GENERATIONS_DIR)
     }
 
+    /// 已提交 generation 的落盘位置：公开证书、链与受控私钥文件。
+    pub fn paths(&self, id: &str) -> GenerationPaths {
+        let directory = self.generations_dir().join(id);
+        GenerationPaths {
+            certificate: directory.join(CERT_FILE),
+            chain: directory.join(CHAIN_FILE),
+            private_key: directory.join(KEY_FILE),
+        }
+    }
+
     /// 写指针临时文件，再用同目录 `rename` 覆盖 `current`。
     fn switch_current(&self, id: &str) -> Result<()> {
         let temporary = self.state_dir.join(CURRENT_TEMP_FILE);
@@ -422,7 +444,7 @@ fn now_millis() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn epoch_seconds(time: DateTime) -> u64 {
+pub(crate) fn epoch_seconds(time: DateTime) -> u64 {
     let days = days_from_civil(i64::from(time.year), i64::from(time.month), i64::from(time.day));
     let seconds = days * 86_400 + i64::from(time.hour) * 3_600 + i64::from(time.minute) * 60 + i64::from(time.second);
     u64::try_from(seconds).unwrap_or(0)

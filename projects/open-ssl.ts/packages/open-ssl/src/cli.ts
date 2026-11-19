@@ -264,6 +264,12 @@ function formatIssue(outcome: AcmeIssueOutcome): string {
     if (!report) return 'no outcome';
     return [
         `delivered generation ${report.generation}`,
+        `sans: ${report.sans.join(', ')}`,
+        `fingerprint sha256: ${report.certificateSha256}`,
+        `valid from ${new Date(report.notBeforeUnix * 1000).toISOString()} until ${new Date(report.notAfterUnix * 1000).toISOString()}`,
+        `certificate: ${report.paths.certificate}`,
+        `chain: ${report.paths.chain}`,
+        `private key: ${report.paths.privateKey}`,
         `account: ${report.accountUrl}`,
         `order: ${report.orderUrl}`,
         `dns records removed: ${report.dnsRecordsRemoved}`,

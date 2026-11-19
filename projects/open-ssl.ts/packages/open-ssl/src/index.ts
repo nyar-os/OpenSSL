@@ -25,12 +25,24 @@ export interface AcmePlan {
     requiredSansNote: string[];
 }
 
+/** Managed file locations of a delivered generation; never the key body. */
+export interface AcmeGenerationPaths {
+    certificate: string;
+    chain: string;
+    privateKey: string;
+}
+
 /** Delivered certificate produced by a real issuance run. */
 export interface AcmeIssueReport {
     accountUrl: string;
     orderUrl: string;
     generation: string;
     dnsRecordsRemoved: number;
+    sans: string[];
+    certificateSha256: string;
+    notBeforeUnix: number;
+    notAfterUnix: number;
+    paths: AcmeGenerationPaths;
 }
 
 /** Outcome of `acmeIssue`: a dry run carries the plan, a real run the report. */
