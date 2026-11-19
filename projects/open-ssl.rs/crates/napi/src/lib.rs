@@ -15,7 +15,6 @@
 use std::{
     cell::RefCell,
     env,
-    io::Write as _,
     path::PathBuf,
     time::Duration,
 };
@@ -25,12 +24,12 @@ use open_ssl_core::{
     CapabilityState, Error as CoreError, ErrorCode,
     audit::capability_ids,
     dns::{
-        MANUAL_PROVIDER, Manual, Prompter,
+        MANUAL_PROVIDER,
         cloudflare::{Cloudflare, DEFAULT_API_BASE, PROVIDER_ID as CLOUDFLARE_PROVIDER, Zone},
         credentials::{ProjectRoot, ProjectSecrets},
     },
     config::{IssueConfig, ResolvedTarget},
-    flow::{self, FlowOptions},
+    flow::{self, FlowOptions, FlowOutcome},
     platform::{CapabilityItem, capabilities as core_capabilities, platform as core_platform},
     state::{DirectoryKind, IssuePlan, plan_issue},
     tls::HttpsTransport,
@@ -393,8 +392,8 @@ fn audit_query(ctx: CallContext) -> Result<JsValue> {
 /// Decoded options shared by `acmePlan` and `acmeIssue`.
 ///
 /// `kind` and `dnsProvider` may be omitted: the project's `open-ssl.json`
-/// supplies them and the final defaults are `staging` and the interactive
-/// `manual` provider. A flag always wins over the configuration, so ordinary
+/// supplies them and the final defaults are `staging` and the `manual`
+/// provider. A flag always wins over the configuration, so ordinary
 /// users only ever type the domains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueArguments {
@@ -412,15 +411,18 @@ pub struct IssueArguments {
     pub dns_zone_name: Option<String>,
     /// Account contacts, for example `mailto:ops@example.com`.
     pub contact: Vec<String>,
-    /// With the interactive `manual` provider: the operator already confirmed
-    /// the records are placed, so print the instructions without waiting on stdin.
-    pub dns_ready: bool,
+    /// With the `manual` provider: the action id returned by a prepare run,
+    /// resuming that order after the operator placed the records. `None`
+    /// prepares a new action instead.
+    pub action: Option<String>,
 }
 
 /// Report returned by `acmeIssue`.
 ///
-/// A dry run carries the plan and a real run carries the issuance report with the
-/// delivered generation. Failure is a structured error, never a silent `blocked`.
+/// A dry run carries the plan, a real run carries the issuance report with the
+/// delivered generation, and a manual prepare run carries the typed
+/// `actionRequired` descriptor instead of a report. Failure is a structured
+/// error, never a silent `blocked`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueOutcome {
@@ -432,6 +434,9 @@ pub struct IssueOutcome {
     /// Report produced by a real run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<flow::IssueReport>,
+    /// Descriptor produced by a manual prepare run, to be resumed with `action`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_required: Option<flow::ActionRequired>,
 }
 
 /// Merge flags, the project configuration, and the defaults into one target.
@@ -485,7 +490,7 @@ pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_cor
 fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &ResolvedTarget, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
     if dry_run {
         let plan = plan_issue(project, target.kind, &target.dns_provider, &arguments.identifiers)?;
-        return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None });
+        return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None, action_required: None });
     }
     let options = FlowOptions {
         kind: target.kind,
@@ -497,7 +502,7 @@ fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &Resolv
         poll_delay: Duration::from_secs(3),
     };
     let transport = HttpsTransport::new();
-    let report = match target.dns_provider.as_str() {
+    let outcome = match target.dns_provider.as_str() {
         CLOUDFLARE_PROVIDER => {
             let zone = resolve_zone(target)?;
             let secrets = ProjectSecrets::load(project)?;
@@ -505,14 +510,15 @@ fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &Resolv
             let api_base = Url::parse(DEFAULT_API_BASE)
                 .map_err(|error| CoreError::new(ErrorCode::Internal, format!("Cloudflare API base is invalid: {error}")))?;
             let mut dns = Cloudflare::with_zone(transport.clone(), api_base, token, zone);
-            flow::issue(project, &options, transport, &mut dns)?
+            // API providers place records themselves; there is no waiting stage,
+            // so an action id can never apply to them.
+            FlowOutcome::Report(flow::issue_api(project, &options, transport, &mut dns)?)
         }
         MANUAL_PROVIDER => {
-            // 交互式模式：没有 `.secrets` 也能签发。每条 TXT 打印给操作者人工放置，
-            // 确认后由 CA 的 dns-01 挑战完成真正的校验。`dns_ready` 表示操作者已经
-            // 在另一个进程里看过提示并放好记录，这里只打印指引，不再等待 stdin。
-            let mut dns = Manual::new(OperatorPrompt { waiting: !arguments.dns_ready });
-            flow::issue(project, &options, transport, &mut dns)?
+            // 人工路径不经过任何 provider：第一次运行 prepare 落盘指引并返回
+            // actionRequired，操作者放好记录后第二次带 `--action <actionId>` 续跑，
+            // 由 CA 完成真正的 dns-01 校验。native 层不做终端交互。
+            flow::issue_manual(project, &options, transport, arguments.action.as_deref())?
         }
         other => {
             return Err(invalid_argument(format!(
@@ -520,35 +526,9 @@ fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &Resolv
             )));
         }
     };
-    Ok(IssueOutcome { dry_run: false, plan: None, report: Some(report) })
-}
-
-/// Terminal prompter for the interactive `manual` provider.
-///
-/// Prints the instruction to stdout and, unless the operator passed
-/// `dnsReady`, blocks on one stdin line. EOF means the operator canceled,
-/// which fails with `denied` instead of silently continuing.
-struct OperatorPrompt {
-    waiting: bool,
-}
-
-impl Prompter for OperatorPrompt {
-    fn await_confirmation(&mut self, message: &str) -> open_ssl_core::Result<()> {
-        println!("{message}");
-        std::io::stdout().flush().map_err(|error| CoreError::new(ErrorCode::Io, format!("无法写入交互提示：{error}")))?;
-        if !self.waiting {
-            println!("（--dns-ready：只打印指引，继续由 CA 校验）");
-            std::io::stdout().flush().map_err(|error| CoreError::new(ErrorCode::Io, format!("无法写入交互提示：{error}")))?;
-            return Ok(());
-        }
-        let mut line = String::new();
-        let read = std::io::stdin()
-            .read_line(&mut line)
-            .map_err(|error| CoreError::new(ErrorCode::Io, format!("无法读取交互输入：{error}")))?;
-        if read == 0 {
-            return Err(CoreError::new(ErrorCode::Denied, "交互式签发已取消：标准输入已结束"));
-        }
-        Ok(())
+    match outcome {
+        FlowOutcome::Report(report) => Ok(IssueOutcome { dry_run: false, plan: None, report: Some(report), action_required: None }),
+        FlowOutcome::ActionRequired(action) => Ok(IssueOutcome { dry_run: false, plan: None, report: None, action_required: Some(action) }),
     }
 }
 
@@ -603,9 +583,8 @@ fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreE
     let dns_zone_id = optional_string_prop(object, "dnsZoneId").map_err(napi_error)?;
     let dns_zone_name = optional_string_prop(object, "dnsZoneName").map_err(napi_error)?;
     let contact = optional_string_array(object, "contact")?;
-    let dns_ready_value = object.get_named("dnsReady").map_err(napi_error)?;
-    let dns_ready = if dns_ready_value.is_undefined().map_err(napi_error)? { false } else { dns_ready_value.as_bool().map_err(napi_error)? };
-    Ok(IssueArguments { project_root, kind, dns_provider, identifiers, dns_zone_id, dns_zone_name, contact, dns_ready })
+    let action = optional_string_prop(object, "action").map_err(napi_error)?;
+    Ok(IssueArguments { project_root, kind, dns_provider, identifiers, dns_zone_id, dns_zone_name, contact, action })
 }
 
 /// `contact` may be omitted; a present value must be an array of strings.
@@ -642,6 +621,7 @@ fn directory_kind(value: &str) -> std::result::Result<DirectoryKind, CoreError> 
     }
 }
 
+#[allow(dead_code)]
 fn required_string(object: JsValue, name: &str) -> std::result::Result<String, CoreError> {
     let value = object.get_named(name).map_err(napi_error)?;
     if value.type_of().map_err(napi_error)? != wae::sys::napi_string {
@@ -712,9 +692,10 @@ fn plan_summary(target: &ResolvedTarget, identifiers: &[String]) -> String {
 
 fn issue_summary(target: &ResolvedTarget, identifiers: &[String], outcome: &IssueOutcome) -> String {
     let base = plan_summary(target, identifiers);
-    match &outcome.report {
-        Some(report) => format!("{base}: delivered generation {}", report.generation),
-        None => format!("{base}: dry run"),
+    match (&outcome.report, &outcome.action_required) {
+        (Some(report), _) => format!("{base}: delivered generation {}", report.generation),
+        (None, Some(action)) => format!("{base}: action {} awaiting manual DNS", action.action_id),
+        (None, None) => format!("{base}: dry run"),
     }
 }
 
