@@ -1,4 +1,4 @@
-use crate::der::{BitString, DateTime, DerError, DerErrorKind, DerResult, Oid, Reader, Tag, Writer, encode_element, oids};
+use data_binary_asn1::{BitString, DateTime, DerError, DerErrorKind, DerResult, Oid, Reader, Tag, Writer, encode_element, oids};
 
 use super::{name::Name, spki::PublicKey};
 

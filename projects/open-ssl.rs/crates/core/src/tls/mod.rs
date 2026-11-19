@@ -175,7 +175,7 @@ impl TlsClient {
             return Err(TlsError::Certificate("empty certificate message".to_string()));
         }
         let intermediates: Vec<&Certificate<'_>> = parsed[1..].iter().collect();
-        let now = crate::der::DateTime::now_utc();
+        let now = data_binary_asn1::DateTime::now_utc();
         verify_chain(&parsed[0], &intermediates, config.anchors, &now).map_err(|error| TlsError::Certificate(error.to_string()))?;
         if !matches_dns(&parsed[0], config.hostname) {
             return Err(TlsError::Certificate(format!("{} is not valid for {}", config.hostname, parsed[0].subject)));

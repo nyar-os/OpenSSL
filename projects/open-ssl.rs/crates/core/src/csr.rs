@@ -8,10 +8,8 @@
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use signature::{Signer, Verifier};
 
-use crate::{
-    der::{DerError, DerErrorKind, DerResult, Reader, Tag, Writer, oids},
-    x509::{EcCurve, Name, PublicKey, SignatureAlgorithm},
-};
+use crate::x509::{EcCurve, Name, PublicKey, SignatureAlgorithm};
+use data_binary_asn1::{DerError, DerErrorKind, DerResult, Reader, Tag, Writer, oids};
 
 /// Generate a fresh P-256 private key from the system CSPRNG.
 ///

@@ -216,10 +216,8 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 #[test]
 fn client_and_server_interoperate() {
-    use open_ssl_core::{
-        der::{Tag, Writer, oids},
-        x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor, verify_signature},
-    };
+    use data_binary_asn1::{Tag, Writer, oids};
+    use open_ssl_core::x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor, verify_signature};
     use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
     use signature::Signer;
 

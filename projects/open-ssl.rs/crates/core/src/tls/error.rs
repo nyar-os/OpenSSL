@@ -39,8 +39,8 @@ impl From<std::io::Error> for TlsError {
     }
 }
 
-impl From<crate::der::DerError> for TlsError {
-    fn from(error: crate::der::DerError) -> Self {
+impl From<data_binary_asn1::DerError> for TlsError {
+    fn from(error: data_binary_asn1::DerError) -> Self {
         Self::Protocol(error.to_string())
     }
 }

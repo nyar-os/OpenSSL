@@ -1,10 +1,8 @@
 //! X.509 conformance tests over a self-built ECDSA test PKI.
 
-use open_ssl_core::{
-    der::{DateTime, Oid, Tag, Writer, oids},
-    x509::{
-        Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor, VerifyError, matches_dns, pem_encode, verify_chain, verify_signature,
-    },
+use data_binary_asn1::{DateTime, Oid, Tag, Writer, oids};
+use open_ssl_core::x509::{
+    Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor, VerifyError, matches_dns, pem_encode, verify_chain, verify_signature,
 };
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use signature::Signer;

@@ -1,4 +1,4 @@
-use crate::der::{DerError, DerErrorKind, DerResult, Oid, Reader, Tag, Writer, oids};
+use data_binary_asn1::{DerError, DerErrorKind, DerResult, Oid, Reader, Tag, Writer, oids};
 
 /// The elliptic curves this product understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

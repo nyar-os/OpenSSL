@@ -3,7 +3,7 @@ use core::fmt;
 use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier;
 
-use crate::der::DateTime;
+use data_binary_asn1::DateTime;
 
 use super::{
     cert::{Certificate, SignatureAlgorithm},

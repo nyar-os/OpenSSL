@@ -12,8 +12,6 @@ pub mod config;
 pub mod csr;
 /// 证书代交付：generation 清单、单一提交点与回滚。
 pub mod delivery;
-/// Product-owned ASN.1 DER codec.
-pub mod der;
 /// DNS-01 record placement, provider adapters, and project-scoped credentials.
 pub mod dns;
 /// Capability states, stable error codes, and the structured error type.

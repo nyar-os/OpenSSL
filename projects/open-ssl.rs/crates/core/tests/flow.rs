@@ -16,8 +16,8 @@ use std::{
 };
 
 use boost_net::http::HttpTransport;
+use data_binary_asn1::{Tag, Writer, oids};
 use open_ssl_core::{
-    der::{Tag, Writer, oids},
     dns::{DnsProvider, RecordHandle, TxtRecord},
     flow::{self, FlowOptions, FlowOutcome},
     x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, pem_encode},
@@ -90,7 +90,7 @@ fn san_der(names: &[&str]) -> Vec<u8> {
     w.finish()
 }
 
-fn extension_der(oid: open_ssl_core::der::Oid, value: &[u8]) -> Vec<u8> {
+fn extension_der(oid: data_binary_asn1::Oid, value: &[u8]) -> Vec<u8> {
     let mut w = Writer::new();
     w.sequence(|ext| {
         ext.write_oid(&oid);

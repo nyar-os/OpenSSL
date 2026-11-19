@@ -50,11 +50,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    der::DateTime,
     dns::credentials::ProjectRoot,
     errors::{Error, ErrorCode, Result},
     x509::{Certificate, EcCurve, PublicKey, pem_bundle, pem_decode},
 };
+use data_binary_asn1::DateTime;
 
 /// generation 清单所在的子目录。
 const GENERATIONS_DIR: &str = "generations";

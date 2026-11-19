@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::der::{DerError, DerErrorKind, DerResult, Oid, Reader, Tag, encode_element};
+use data_binary_asn1::{DerError, DerErrorKind, DerResult, Oid, Reader, Tag, encode_element};
 
 /// One attribute inside an RDN: an OID and its printable value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl Name {
 
     /// The first commonName value, if any.
     pub fn common_name(&self) -> Option<&str> {
-        let oid = crate::der::oids::common_name();
+        let oid = data_binary_asn1::oids::common_name();
         self.rdns.iter().flatten().find(|item| item.oid == oid).map(|item| item.value.as_str())
     }
 }

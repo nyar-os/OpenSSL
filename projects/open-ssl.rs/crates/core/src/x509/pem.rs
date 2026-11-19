@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-use crate::der::{DerError, DerErrorKind, DerResult};
+use data_binary_asn1::{DerError, DerErrorKind, DerResult};
 
 /// The padded standard base64 engine used for PEM bodies.
 const B64: base64::engine::general_purpose::GeneralPurpose = STANDARD;

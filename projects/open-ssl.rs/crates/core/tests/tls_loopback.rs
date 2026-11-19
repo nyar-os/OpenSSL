@@ -7,10 +7,8 @@ use std::{
     time::Duration,
 };
 
-use open_ssl_core::{
-    der::{Tag, Writer, oids},
-    x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor},
-};
+use data_binary_asn1::{Tag, Writer, oids};
+use open_ssl_core::x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, TrustAnchor};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use signature::Signer;
 
@@ -42,7 +40,7 @@ fn san_der(names: &[&str]) -> Vec<u8> {
     w.finish()
 }
 
-fn extension_der(oid: open_ssl_core::der::Oid, value: &[u8]) -> Vec<u8> {
+fn extension_der(oid: data_binary_asn1::Oid, value: &[u8]) -> Vec<u8> {
     let mut w = Writer::new();
     w.sequence(|ext| {
         ext.write_oid(&oid);

@@ -7,10 +7,10 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use data_binary_asn1::{DateTime, Oid, Tag, Writer, oids};
 use open_ssl_core::{
     ErrorCode,
     delivery::{CertificateBundle, Delivery},
-    der::{DateTime, Oid, Tag, Writer, oids},
     dns::credentials::ProjectRoot,
     x509::{EcCurve, PublicKey, SignatureAlgorithm, pem_encode},
 };
