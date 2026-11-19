@@ -17,8 +17,8 @@
             "remote-agent": "Manage certificates on a remote computer",
             "host-install": "Install the host integration and desktop entry",
             "host-uninstall": "Remove the host integration and clean residual state",
-            "acme-plan": "Report the local-only issuance plan without touching DNS, keys, or the CA",
-            "acme-issue": "Issue and deliver a certificate over ACME dns-01, or plan only with --dry-run"
+            "acme-plan": "Report the local-only issuance plan: `open-ssl acme-plan <domain...>`; provider and zone come from `open-ssl.json`",
+            "acme-issue": "Issue and deliver a certificate: `open-ssl acme-issue <domain...>`; provider, zone, and directory come from `open-ssl.json`, flags override"
         },
         "opt": {
             "actor": "Audit actor id (user or agent name)",
@@ -33,12 +33,12 @@
             "to-ms": "Filter audit records up to this Unix timestamp in milliseconds",
             "limit": "Maximum number of audit records",
             "content-dir": "Directory containing the staged GUI build",
-            "acme-kind": "ACME directory to target: staging or production",
-            "dns-provider": "DNS provider: cloudflare (token from .secrets/open-ssl.json) or manual (interactive record placement, no secrets needed)",
-            "identifier": "Subject identifier to certify; repeat for several names",
-            "contact": "Account contact URI, for example mailto:ops@example.com; repeatable",
-            "dns-zone-id": "Cloudflare zone id managing the challenge records",
-            "dns-zone-name": "Cloudflare zone name managing the challenge records",
+            "acme-kind": "Override the `kind` configured in `open-ssl.json`: staging or production",
+            "dns-provider": "Override the `dnsProvider` configured in `open-ssl.json`: cloudflare or manual (default: config, then manual)",
+            "identifier": "Domain to certify; pass them as plain arguments instead",
+            "contact": "Override the account contacts configured in `open-ssl.json`; repeatable",
+            "dns-zone-id": "Override `zone.id` from `open-ssl.json` (Cloudflare zone id)",
+            "dns-zone-name": "Override `zone.name` from `open-ssl.json` (Cloudflare zone name)",
             "project": "Project root owning .secrets/open-ssl.json (defaults to the working directory)"
         }
     }

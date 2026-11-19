@@ -228,22 +228,29 @@ cli.command('gui', 'cli.cmd.gui')
         }
     });
 
-/** Shared target parsing for `acme-plan` and `acme-issue`. */
-function acmeTarget(options: ParsedOptions): AcmeTargetOptions {
+/**
+ * Shared target parsing for `acme-plan` and `acme-issue`.
+ *
+ * Domains are positional; every other value may come from the project's
+ * `open-ssl.json` instead of a flag, so the ordinary invocation is just
+ * `open-ssl acme-issue <domain...>`. Flags still override the configuration.
+ */
+function acmeTarget(options: ParsedOptions, domains: string[]): AcmeTargetOptions {
     const kind = stringOption(options, 'kind');
-    if (kind !== 'staging' && kind !== 'production') {
+    if (kind !== undefined && kind !== 'staging' && kind !== 'production') {
         throw new AppError({ code: 'invalid_argument', message: '`--kind` must be `staging` or `production`' });
     }
-    const dnsProvider = stringOption(options, 'dns-provider');
-    if (!dnsProvider) {
-        throw new AppError({ code: 'invalid_argument', message: '`--dns-provider` is required' });
-    }
-    const identifiers = stringArrayOption(options, 'identifier');
+    const identifiers = domains.length ? domains : stringArrayOption(options, 'identifier');
     if (!identifiers.length) {
-        throw new AppError({ code: 'invalid_argument', message: 'at least one `--identifier` is required' });
+        throw new AppError({ code: 'invalid_argument', message: 'usage: `open-ssl acme-plan <domain...>` or `open-ssl acme-issue <domain...>` (provider and zone live in `open-ssl.json`)' });
     }
+    const dnsProvider = stringOption(options, 'dns-provider');
     const projectRoot = stringOption(options, 'project');
-    return projectRoot ? { kind, dnsProvider, identifiers, projectRoot } : { kind, dnsProvider, identifiers };
+    const target: AcmeTargetOptions = { identifiers };
+    if (kind) target.kind = kind as 'staging' | 'production';
+    if (dnsProvider) target.dnsProvider = dnsProvider;
+    if (projectRoot) target.projectRoot = projectRoot;
+    return target;
 }
 
 function formatPlan(plan: AcmePlan): string {
@@ -281,10 +288,10 @@ cli.command('acme-plan', 'cli.cmd.acme-plan')
     .option('--dns-provider <id>', 'cli.opt.dns-provider')
     .option('--identifier <domain>...', 'cli.opt.identifier')
     .option('--project <path>', 'cli.opt.project')
-    .actionCtx(async (options, _args, ctx) => {
+    .actionCtx(async (options, args, ctx) => {
         try {
             bootstrap(options);
-            const plan = ssl.acmePlan(acmeTarget(options));
+            const plan = ssl.acmePlan(acmeTarget(options, args));
             emit(options, ctx, plan, formatPlan(plan));
             return EXIT.OK;
         }
@@ -302,11 +309,11 @@ cli.command('acme-issue', 'cli.cmd.acme-issue')
     .option('--dns-zone-name <name>', 'cli.opt.dns-zone-name')
     .option('--project <path>', 'cli.opt.project')
     .option('--dry-run', 'cli.opt.dry-run')
-    .actionCtx(async (options, _args, ctx) => {
+    .actionCtx(async (options, args, ctx) => {
         try {
             bootstrap(options);
             const outcome = ssl.acmeIssue({
-                ...acmeTarget(options),
+                ...acmeTarget(options, args),
                 dryRun: flag(options, 'dry-run'),
                 dnsZoneId: stringOption(options, 'dns-zone-id'),
                 dnsZoneName: stringOption(options, 'dns-zone-name'),
