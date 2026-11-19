@@ -399,7 +399,8 @@ pub struct IssuePlan {
 ///
 /// 只读取项目状态与项目秘密文件的**可用性**：不建账户、不建订单、不写任何文件、不改 DNS、
 /// 不生成密钥、不读取私钥。秘密文件缺失、不可读或不合 `/v0` 合同仍是明确失败；文件合法但
-/// 该 provider 没有 token 只记成 `dns_token_available = false`。
+/// 该 provider 没有 token 只记成 `dns_token_available = false`。唯一的例外是 `manual`
+/// provider：它由操作者人工放置记录，天然不需要秘密文件。
 ///
 /// `identifiers` 会被校验并规范化（去首尾空白、去末尾点、小写），非法或重复的标识按
 /// [`ErrorCode::InvalidArgument`] 拒绝，不会擅自补出不存在的 SAN。
@@ -411,12 +412,17 @@ pub fn plan_issue(project: &ProjectRoot, kind: DirectoryKind, dns_provider: &str
     let (identifiers, required_sans_note) = normalize_identifiers(identifiers)?;
 
     let secrets_file = project.secrets_file();
-    let secrets = ProjectSecrets::load(project)?;
-    let dns_token_available = match secrets.dns_token(dns_provider) {
-        Ok(_) => true,
-        Err(error) if error.code() == ErrorCode::InvalidArgument => false,
-        Err(error) => return Err(error),
-    };
+    let manual = dns_provider == crate::dns::MANUAL_PROVIDER;
+    let mut secrets_available = false;
+    // manual 由操作者本人放置记录，不需要任何 API 凭证；token 天然可用。
+    let mut dns_token_available = manual;
+    if !manual || secrets_file.exists() {
+        let secrets = ProjectSecrets::load(project)?;
+        secrets_available = true;
+        if secrets.dns_token(dns_provider).is_ok() {
+            dns_token_available = true;
+        }
+    }
 
     let store = StateStore::new(project);
     let existing_account = store.account(kind)?.is_some();
@@ -428,7 +434,7 @@ pub fn plan_issue(project: &ProjectRoot, kind: DirectoryKind, dns_provider: &str
         dns_provider: dns_provider.to_owned(),
         identifiers,
         secrets_file,
-        secrets_available: true,
+        secrets_available,
         dns_token_available,
         existing_account,
         pending_order,

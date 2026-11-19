@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use open_ssl_core::{
     ErrorCode,
     dns::{
-        DnsProvider, Manual, RecordHandle, TxtRecord, challenge_fqdn,
+        DnsProvider, Manual, Prompter, RecordHandle, TxtRecord, challenge_fqdn,
         cloudflare::{Cloudflare, Zone},
         credentials::Secret,
     },
@@ -22,6 +22,15 @@ use open_ssl_core::{
 
 const FQDN: &str = "_acme-challenge.wxtoken.work";
 const TOKEN: &str = "cf-token-keep-out-of-errors";
+
+/// 自动确认的提示器：测试里不等待真实 stdin。
+struct AutoPrompt;
+
+impl Prompter for AutoPrompt {
+    fn await_confirmation(&mut self, _message: &str) -> open_ssl_core::Result<()> {
+        Ok(())
+    }
+}
 
 /// 一条脚本化的 provider 记录：id、name、content。
 type Registry = Arc<Mutex<Vec<(String, String, String)>>>;
@@ -102,7 +111,7 @@ fn record_handle_rejects_an_empty_provider_id() {
 
 #[test]
 fn manual_keeps_two_values_for_one_name_and_deletes_by_handle() {
-    let mut provider = Manual::new();
+    let mut provider = Manual::new(AutoPrompt);
     let first = provider.put_txt(FQDN, "value-one").expect("manual placement");
     let second = provider.put_txt(FQDN, "value-two").expect("manual second placement");
     assert_ne!(first.handle, second.handle);
@@ -118,10 +127,23 @@ fn manual_keeps_two_values_for_one_name_and_deletes_by_handle() {
 
 #[test]
 fn manual_rejects_empty_names_and_values() {
-    let mut provider = Manual::new();
+    let mut provider = Manual::new(AutoPrompt);
     assert_eq!(provider.put_txt("", "value").expect_err("empty name").code(), ErrorCode::InvalidArgument);
     assert_eq!(provider.put_txt(FQDN, "").expect_err("empty value").code(), ErrorCode::InvalidArgument);
     assert!(provider.pending_records().is_empty());
+}
+
+#[test]
+fn manual_treats_a_refused_prompt_as_cancellation() {
+    struct Refuse;
+    impl Prompter for Refuse {
+        fn await_confirmation(&mut self, _message: &str) -> open_ssl_core::Result<()> {
+            Err(open_ssl_core::Error::new(ErrorCode::Denied, "操作者取消"))
+        }
+    }
+    let mut provider = Manual::new(Refuse);
+    assert_eq!(provider.put_txt(FQDN, "value").expect_err("被拒绝的确认必须中断").code(), ErrorCode::Denied);
+    assert!(provider.pending_records().is_empty(), "操作者未确认的记录不得登记");
 }
 
 #[test]

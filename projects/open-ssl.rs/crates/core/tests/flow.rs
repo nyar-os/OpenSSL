@@ -18,7 +18,7 @@ use std::{
 use boost_net::http::HttpTransport;
 use open_ssl_core::{
     der::{Tag, Writer, oids},
-    dns::{DnsProvider, RecordHandle, TxtRecord},
+    dns::{DnsProvider, Manual, Prompter, RecordHandle, TxtRecord},
     flow::{self, FlowOptions},
     x509::{Certificate, EcCurve, PublicKey, SignatureAlgorithm, pem_encode},
 };
@@ -347,6 +347,56 @@ fn failure_cleans_the_records_it_published() {
         .expect_err("order polling must time out");
     assert_eq!(error.code(), open_ssl_core::ErrorCode::Network);
     assert!(dns.records.is_empty(), "失败路径同样要精确清理已发布的 TXT");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[derive(Clone)]
+struct RecordingPrompter(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Prompter for RecordingPrompter {
+    fn await_confirmation(&mut self, message: &str) -> open_ssl_core::Result<()> {
+        self.0.lock().expect("prompt lock").push(message.to_owned());
+        Ok(())
+    }
+}
+
+#[test]
+fn manual_provider_prompts_the_operator_and_still_delivers_without_secrets() {
+    // 交互式模式的核心承诺：项目根本没有 `.secrets` 也能走完整签发，
+    // 每条 TXT 逐一向操作者要添加与删除确认。
+    let root = std::env::temp_dir().join(format!("open-ssl-flow-manual-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("bare project root");
+    let project = open_ssl_core::dns::credentials::ProjectRoot::new(&root).expect("project root");
+    assert!(!root.join(".secrets").exists(), "测试项目不得携带秘密文件");
+
+    let identifiers = vec!["example.test".to_owned(), "*.example.test".to_owned()];
+    let id = flow::order_id(open_ssl_core::state::DirectoryKind::Staging, &identifiers);
+    let placed = open_ssl_core::keys::order_key(&project, &id).expect("pre-place leaf key");
+    let chain = chain_for(placed.verifying_key());
+    let server = mock::MockServer::start(script(chain, Arc::new(AtomicBool::new(false))));
+
+    let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut dns = Manual::new(RecordingPrompter(Arc::clone(&prompts)));
+    let directory = server.url("/directory");
+    let flow_options = FlowOptions {
+        kind: open_ssl_core::state::DirectoryKind::Staging,
+        directory_url: &directory,
+        dns_provider: "manual",
+        identifiers: &identifiers,
+        contact: &[],
+        poll_attempts: 4,
+        poll_delay: Duration::ZERO,
+    };
+    let report = flow::issue(&project, &flow_options, HttpTransport::new(), &mut dns).expect("manual issuance succeeds");
+
+    let log = prompts.lock().expect("prompt lock").clone();
+    assert_eq!(log.len(), 4, "两条添加与两条删除提示都必须逐条交互：{log:?}");
+    assert!(log[0].contains("_acme-challenge.example.test"), "添加提示必须给出记录名：{}", log[0]);
+    assert!(log.iter().all(|entry| !entry.contains("test-token")), "提示不得泄漏任何凭证");
+    assert!(dns.pending_records().is_empty(), "确认后 manual 不再持有记录");
+    assert_eq!(report.dns_records_removed, 2);
+    assert!(report.paths.certificate.is_file(), "manual 模式同样交付真实一代");
     let _ = fs::remove_dir_all(root);
 }
 

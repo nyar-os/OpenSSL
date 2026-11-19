@@ -5,8 +5,9 @@
 //! 记录。裸域与泛域名共享同一个 `_acme-challenge.` 记录名，因此多个值必须能共存到各自的
 //! owner 完成清理。
 //!
-//! [`Manual`] 是把记录交回人工放置的兜底实现；[`cloudflare::Cloudflare`] 是第一个 API 适配器，
-//! 要求调用方显式配置 zone。
+//! [`Manual`] 是交互式 provider：它把每条记录连同值打印给操作者，等待人工在 DNS 控制台
+//! 放置（或清理）后按 Enter 再继续，因此不需要任何 API 凭证；真正的校验由 CA 的 dns-01
+//! 挑战完成。[`cloudflare::Cloudflare`] 是第一个 API 适配器，要求调用方显式配置 zone。
 
 pub mod cloudflare;
 pub mod credentials;
@@ -77,18 +78,32 @@ pub fn challenge_fqdn(identifier: &str) -> String {
     format!("{CHALLENGE_LABEL}.{name}")
 }
 
-/// 兜底 provider：记录保留下来，等待人工放置。
-#[derive(Debug, Default)]
-pub struct Manual {
-    placed: Vec<TxtRecord>,
-    next_id: u64,
+/// `manual` provider 的稳定 id。
+pub const MANUAL_PROVIDER: &str = "manual";
+
+/// 交互式提示器：把操作指引交给宿主终端，等待操作者确认后继续。
+pub trait Prompter {
+    /// 打印 `message` 并等待操作者按 Enter。
+    ///
+    /// 输入结束（EOF）或读取失败表示操作者取消，必须以 [`ErrorCode::Denied`] 失败，
+    /// 不能静默当作已确认。
+    fn await_confirmation(&mut self, message: &str) -> Result<()>;
 }
 
-impl Manual {
-    /// 创建一个空的 manual provider。
+/// 交互式 manual provider：不读取任何凭证，把每条 TXT 记录打印给操作者人工放置，
+/// 等待确认后才让 CA 去校验；清理阶段同样逐条打印待删除的记录。
+#[derive(Debug)]
+pub struct Manual<P> {
+    placed: Vec<TxtRecord>,
+    next_id: u64,
+    prompter: P,
+}
+
+impl<P: Prompter> Manual<P> {
+    /// 绑定一个提示器创建 manual provider。
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(prompter: P) -> Self {
+        Self { placed: Vec::new(), next_id: 0, prompter }
     }
 
     /// 当前等待人工放置的记录。
@@ -97,7 +112,7 @@ impl Manual {
     }
 }
 
-impl DnsProvider for Manual {
+impl<P: Prompter> DnsProvider for Manual<P> {
     fn put_txt(&mut self, fqdn: &str, value: &str) -> Result<TxtRecord> {
         if fqdn.trim().is_empty() {
             return Err(Error::new(ErrorCode::InvalidArgument, "TXT 记录名不能为空"));
@@ -108,6 +123,10 @@ impl DnsProvider for Manual {
         self.next_id += 1;
         let record =
             TxtRecord { fqdn: fqdn.to_owned(), value: value.to_owned(), handle: RecordHandle::new(format!("manual-{}", self.next_id))? };
+        self.prompter.await_confirmation(&format!(
+            "请在 DNS 控制台添加 TXT 记录：\n    名称: {}\n    值:   {}\n添加完成并生效后按 Enter 继续验证。",
+            record.fqdn, record.value
+        ))?;
         self.placed.push(record.clone());
         Ok(record)
     }
@@ -117,6 +136,10 @@ impl DnsProvider for Manual {
     }
 
     fn delete_txt(&mut self, record: &TxtRecord) -> Result<()> {
+        self.prompter.await_confirmation(&format!(
+            "请从 DNS 控制台删除本次添加的 TXT 记录：\n    名称: {}\n    值:   {}\n删除后按 Enter 继续。",
+            record.fqdn, record.value
+        ))?;
         self.placed.retain(|placed| placed.handle != record.handle);
         Ok(())
     }
