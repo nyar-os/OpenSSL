@@ -36,9 +36,9 @@ wae = { git = "https://github.com/doki-land/wae-framework.git", rev = "ae0db2596
 # HTTP transport ownership is the family ruling: ACME and provider APIs consume
 # `boost.net::http`. `std` only — the plaintext loopback slice must not pull any
 # TLS backend; HTTPS consumers wait for the Boost `boost.net::tls` acceptance gate.
-boost-net = { git = "https://github.com/oovm/rust-boost", rev = "b6343d76c96e4520a5d1e970260b815bf8b5deaa", default-features = false, features = ["std"] }
-data-binary-asn1 = { git = "https://github.com/oovm/rust-boost", rev = "b6343d76c96e4520a5d1e970260b815bf8b5deaa" }
-boost-random = { git = "https://github.com/oovm/rust-boost", rev = "b6343d76c96e4520a5d1e970260b815bf8b5deaa" }
+boost-net = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158", default-features = false, features = ["std"] }
+data-binary-asn1 = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158" }
+boost-random = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158" }
 open-ssl-core = { path = "projects/open-ssl.rs/crates/core", version = "0.0.0" }
 
 [profile.release]

@@ -88,7 +88,7 @@ dependencies = [
 [[package]]
 name = "boost-crypto"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 dependencies = [
  "boost-random",
  "data-encoding",
@@ -101,23 +101,24 @@ dependencies = [
 [[package]]
 name = "boost-math"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 
 [[package]]
 name = "boost-net"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 dependencies = [
  "boost-crypto",
  "boost-random",
  "data-encoding",
+ "serde_json",
  "url",
 ]
 
 [[package]]
 name = "boost-random"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 dependencies = [
  "boost-math",
 ]
@@ -214,12 +215,12 @@ dependencies = [
 [[package]]
 name = "data-binary-asn1"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 
 [[package]]
 name = "data-encoding"
 version = "0.1.0"
-source = "git+https://github.com/oovm/rust-boost?rev=b6343d76c96e4520a5d1e970260b815bf8b5deaa#b6343d76c96e4520a5d1e970260b815bf8b5deaa"
+source = "git+https://github.com/oovm/boost.rs?rev=724adc8c76c8f38ef99b616aab91c23c0469a158#724adc8c76c8f38ef99b616aab91c23c0469a158"
 
 [[package]]
 name = "der"
