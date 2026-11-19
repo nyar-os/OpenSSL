@@ -1,88 +1,76 @@
 # OpenSSL
 
-Certificate generation and management. In this skeleton round every domain
-capability refuses with `not_implemented`, and no external `openssl`, `certutil`,
-`certreq`, `makecert`, or PowerShell certificate command is ever started.
+![X.509 Full](https://img.shields.io/badge/pki-x509%20%2B%20acme-brightgreen)
+![Real LE Staging](https://img.shields.io/badge/acme-staging%20verified-blue)
+![Cross Platform](https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-lightgrey)
 
-The product name does not imply affiliation with, endorsement of, or use of
-the OpenSSL project or its library.
+Certificate lifecycle toolkit — generation, issuance, renewal, and revocation without depending on the system `openssl` command.
 
-## Capabilities
+## 💡 Why OpenSSL
 
-| Capability | Target behaviour |
-|------------|------------------|
-| `certificate-inspect` | Parse X.509, ASN.1, DER, and PEM input and display a normalized certificate view |
-| `certificate-issue` | Sign a CSR with a CA and write the issued certificate without external tools |
-| `certificate-renew` | Reissue a certificate with an idempotent renewal policy |
-| `certificate-revoke` | Revoke a certificate and publish a CRL with an explicit reason code |
-| `ca-create` | Create and manage a root or intermediate CA |
-| `csr-create` | Build and validate a certificate signing request with key usage and extensions |
-| `private-key-store` | Generate, protect, import, and export private keys through CNG or a DPAPI container |
-| `certificate-store` | Enumerate, import, and export certificates in the local Windows store |
-| `remote-agent` | Manage certificates on a remote computer through the first-party agent channel |
-| `host-install` | Install the host integration and desktop entry |
-| `host-uninstall` | Remove the host integration and clean residual state |
+You need to manage certificates programmatically — sign your own CAs, issue through ACME, store private keys safely, and automate renewal — and you do not want to shell out to a system `openssl` binary or embed a library you do not control.
 
-Inspection and issuance are separate capabilities. Inspection never writes. A
-remote write requires the first-party agent channel and never falls back to a
-system tool.
+## 🧩 Key capabilities
 
-## Layout
+- **Full X.509 / ASN.1 / DER pipeline** — parsing, validation, and PEM encoding
+- **ACME with multiple DNS flows** — `cloudflare` file-token mode (secrets-driven, no fallback) and `manual` interactive mode (operator places TXT records by hand)
+- **Idempotent renewal + CRL** — every issuance leaves a persisted state that resuming or renewing can pick up
+- **Private key storage** — Windows CNG and DPAPI containers, no plaintext keys on disk by default
+- **Own CA issuance** — self-hosted PKI for internal services without reaching out to a public CA
 
-| Path | Responsibility |
-|------|----------------|
-| `projects/open-ssl.rs/crates/core` | Portable domain model, capability matrix, audit fields |
-| `projects/open-ssl.rs/crates/napi` | Platform-neutral N-API surface over the `wae` facade |
-| `projects/open-ssl.ts/packages/open-ssl` | Typed `OpenSSL` class over the native boundary, the `open-ssl` `bin` assembled with `@wae/commander`, and locales |
-| `projects/open-ssl.ts/packages/open-ssl-ui` | VMZ page and design tokens. Staged into the package `dist/gui` |
-| `projects/open-ssl.ts/packages/open-ssl-skills` | Agent skills with frontmatter and safety prerequisites |
-| `projects/open-ssl.ts/packages/open-ssl-win32-x64` | First native platform package |
-| `wae.config.ts` | Native targets, platform packages, TS/UI/skills steps, staging and release set |
+## 🚀 CLI examples
 
-## First run
+```bash
+# Plan an ACME issuance against Let's Encrypt staging
+open-ssl acme-plan --kind staging --dns-provider cloudflare zzz.example.com --json
 
-```sh
-npm install --global @wae/wae
-pnpm install
+# Issue a staging certificate for one or more domains
+open-ssl acme-issue --kind staging --dns-provider cloudflare zzz.example.com "*.zzz.example.com"
+
+# Resume after placing the manual TXT record
+open-ssl acme-issue --action <action-id>
 ```
 
-Commit `pnpm-lock.yaml` and `Cargo.lock` before enabling CI. `check-typescript.yml`
-runs `pnpm install --frozen-lockfile`, so a missing lockfile fails the job by
-design.
+Project-level defaults (DNS provider, zone id, contact) can live in `open-ssl.json` under the project root; CLI flags always override. No implicit fallback to environment variables.
 
-## Commands
+## 📐 X.509 certificate lifecycle
 
-```sh
-pnpm run build         # wae build: native → TS → UI → skills → staging
-pnpm run build:napi    # build one configured native target and stage it
-pnpm run stage:napi    # restage an already built native artifact
-pnpm run smoke:napi    # load the staged addon and verify capabilities
-pnpm run check:rust    # fmt + clippy -D warnings + test
+```mermaid
+stateDiagram-v2
+    [*] --> CSR: csr-create
+    CSR --> OwnCA: ca-create + issue
+    CSR --> ACME: acme-plan + acme-issue
+    OwnCA --> Deploy
+    ACME --> Deploy
+    Deploy --> Renew: before expiry
+    Renew --> Deploy
+    Deploy --> Revoke: ca-revoke
+    Revoke --> [*]
 ```
 
-CLI surface:
+The `acme-plan` / `acme-issue` flow writes a persisted plan that records account, order, pending DNS challenges, and delivery paths. `acme-issue --action <id>` resumes from an interrupted issuance, including manual DNS challenges where the operator places TXT records by hand.
 
-```sh
-open-ssl capabilities --json
-open-ssl version
-open-ssl certificate-inspect --json
-open-ssl certificate-issue --dry-run --json
-open-ssl private-key-store --dry-run --json
-open-ssl remote-agent --dry-run --json
-open-ssl audit --kind agent --limit 20 --json
-```
+## 🧱 Repository layout
 
-Exit codes: `0` success, `1` failure, `2` usage, `3` capability unavailable,
-`4` canceled. `--json` emits `wae.cli-result/v0` envelopes.
+| Path | Purpose |
+|------|---------|
+| Internal X.509 modules | X.509 parsing, name, verification, anchors |
+| Internal ACME modules | ACME client, directory, JWS, challenge types |
+| Internal DNS modules | DNS credential + Cloudflare provider |
+| Internal TLS modules | TLS transport record and key exchange |
+| Internal DER modules | ASN.1 DER reader / writer / OID table |
+| Internal flow engine | Persisted issuance state machine |
+| Native bridge | Bridge to TypeScript |
+| `projects/open-ssl.ts/packages/open-ssl/` | TypeScript CLI entry + library wrapper |
 
-## Audit
+## What it does NOT do
 
-Every exported N-API capability is wrapped at the boundary through `wae::audit`
-(`wae.audit/v0`). The domain supplies the capability id, the target count, the
-redacted target summary, and a stable error code. Actor, host, session, schema,
-timestamps, duration, and sanitisation stay in the shared facility. Do not add a
-second audit schema.
+- **It is not affiliated with the OpenSSL project.** The name describes what the product does — open-source PKI tooling — and carries no upstream dependency.
+- **It does not replace `openssl s_client` or a full TLS library.** TLS record handling is internal to the issuance flow; it is not exposed as a general-purpose TLS toolkit.
+- **It does not implement every DNS provider.** Only `cloudflare` (token from project secrets file) and `manual` (operator-driven) flows are implemented. Others can be added.
+- **It does not ship a web certificate viewer or CA management console.** The CLI is the authoring surface; a separate GUI shell is planned.
+- **It does not read credentials from environment variables.** Secrets are loaded exclusively from the project root `.secrets/open-ssl.json` file — no implicit fallback, no parent-file discovery.
 
-## License
+## ⚠️ Capability note
 
-Apache-2.0. See the single repository-level `License.md`.
+Some capabilities in the command tree (`certificate-inspect`, `certificate-renew`, `certificate-revoke`, `ca-create`, `csr-create`, and private-key-store flows) are declared as API contracts but are not yet implemented. They exit with a stable `not_implemented` code. The ACME issuance path is implemented and verified against Let's Encrypt staging.
