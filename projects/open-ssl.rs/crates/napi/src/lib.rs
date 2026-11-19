@@ -12,13 +12,20 @@
 
 #![deny(missing_docs)]
 
-use std::{cell::RefCell, env, path::PathBuf, time::Duration};
+use std::{
+    cell::RefCell,
+    env,
+    io::{BufRead as _, Write as _},
+    path::PathBuf,
+    time::Duration,
+};
 
 use boost_net::http::Url;
 use open_ssl_core::{
     CapabilityState, Error as CoreError, ErrorCode,
     audit::capability_ids,
     dns::{
+        MANUAL_PROVIDER, Manual, Prompter,
         cloudflare::{Cloudflare, DEFAULT_API_BASE, PROVIDER_ID as CLOUDFLARE_PROVIDER, Zone},
         credentials::{ProjectRoot, ProjectSecrets},
     },
@@ -440,8 +447,6 @@ pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_cor
         return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None });
     }
     let project = resolve_project(arguments)?;
-    let secrets = ProjectSecrets::load(&project)?;
-    let token = secrets.dns_token(&arguments.dns_provider)?;
     let options = FlowOptions {
         kind: arguments.kind,
         directory_url: flow::directory_url(arguments.kind),
@@ -454,19 +459,48 @@ pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_cor
     let transport = HttpsTransport::new();
     let report = match arguments.dns_provider.as_str() {
         CLOUDFLARE_PROVIDER => {
+            let secrets = ProjectSecrets::load(&project)?;
+            let token = secrets.dns_token(&arguments.dns_provider)?;
             let zone = resolve_zone(arguments)?;
             let api_base = Url::parse(DEFAULT_API_BASE)
                 .map_err(|error| CoreError::new(ErrorCode::Internal, format!("Cloudflare API base is invalid: {error}")))?;
             let mut dns = Cloudflare::with_zone(transport.clone(), api_base, token, zone);
             flow::issue(&project, &options, transport, &mut dns)?
         }
+        MANUAL_PROVIDER => {
+            // 交互式模式：没有 `.secrets` 也能签发。每条 TXT 打印给操作者人工放置，
+            // 确认后由 CA 的 dns-01 挑战完成真正的校验。
+            let mut dns = Manual::new(StdinPrompter);
+            flow::issue(&project, &options, transport, &mut dns)?
+        }
         other => {
             return Err(invalid_argument(format!(
-                "`acme-issue` can drive the `{CLOUDFLARE_PROVIDER}` provider only, not `{other}`"
+                "`acme-issue` can drive the `{CLOUDFLARE_PROVIDER}` and `{MANUAL_PROVIDER}` providers only, not `{other}`"
             )));
         }
     };
     Ok(IssueOutcome { dry_run: false, plan: None, report: Some(report) })
+}
+
+/// Terminal prompter for the interactive `manual` provider.
+///
+/// Prints the instruction to stdout and blocks on one stdin line. EOF means the
+/// operator canceled, which fails with `denied` instead of silently continuing.
+struct StdinPrompter;
+
+impl Prompter for StdinPrompter {
+    fn await_confirmation(&mut self, message: &str) -> open_ssl_core::Result<()> {
+        println!("{message}");
+        std::io::stdout().flush().map_err(|error| CoreError::new(ErrorCode::Io, format!("无法写入交互提示：{error}")))?;
+        let mut line = String::new();
+        let read = std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|error| CoreError::new(ErrorCode::Io, format!("无法读取交互输入：{error}")))?;
+        if read == 0 {
+            return Err(CoreError::new(ErrorCode::Denied, "交互式签发已取消：标准输入已结束"));
+        }
+        Ok(())
+    }
 }
 
 /// The zone must be configured explicitly; the adapter never guesses it from

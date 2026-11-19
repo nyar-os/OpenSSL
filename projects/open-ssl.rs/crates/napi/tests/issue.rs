@@ -102,11 +102,26 @@ fn a_real_run_refuses_both_zone_forms_at_once() {
 fn a_real_run_refuses_an_unsupported_provider() {
     let root = temp_project("other-provider");
     let mut arguments = arguments(&root);
-    arguments.dns_provider = "manual".to_owned();
+    arguments.dns_provider = "dnspod".to_owned();
     arguments.dns_zone_name = Some("example.test".to_owned());
-    let error = run_acme_issue(&arguments, false).expect_err("manual 不能作为真实签发的 provider");
+    let error = run_acme_issue(&arguments, false).expect_err("dnspod 还不是受支持的 provider");
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
     cleanup(&root);
+}
+
+#[test]
+fn a_manual_plan_needs_no_secrets_file() {
+    // 交互式模式的前提：没有 `.secrets` 也能出计划，token 天然可用。
+    let root = std::env::temp_dir().join(format!("open-ssl-napi-manual-plan-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
+    std::fs::create_dir_all(&root).expect("temp project root");
+    let mut arguments = arguments(&root);
+    arguments.dns_provider = "manual".to_owned();
+    let outcome = run_acme_issue(&arguments, true).expect("manual dry run");
+    let plan = outcome.plan.expect("dry run carries the plan");
+    assert!(plan.dns_token_available, "manual 由操作者放置记录，天然可用");
+    assert!(!plan.secrets_available, "manual 不要求秘密文件存在");
+    assert!(!root.join(".secrets").exists(), "manual 计划不得创建秘密目录");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
