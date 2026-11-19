@@ -6,6 +6,8 @@
 pub mod acme;
 /// Stable capability ids and the audit summary vocabulary.
 pub mod audit;
+/// 项目签发配置：provider、zone、directory 与联系人的默认值。
+pub mod config;
 /// Product-owned PKCS#10 certificate signing requests.
 pub mod csr;
 /// 证书代交付：generation 清单、单一提交点与回滚。
