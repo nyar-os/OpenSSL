@@ -38,13 +38,18 @@ fn state_dir(root: &Path) -> PathBuf {
 fn arguments(root: &Path) -> IssueArguments {
     IssueArguments {
         project_root: Some(root.to_path_buf()),
-        kind: DirectoryKind::Staging,
-        dns_provider: "cloudflare".to_owned(),
+        kind: Some(DirectoryKind::Staging),
+        dns_provider: Some("cloudflare".to_owned()),
         identifiers: vec!["example.test".to_owned(), "*.example.test".to_owned()],
         dns_zone_id: None,
         dns_zone_name: None,
         contact: Vec::new(),
     }
+}
+
+/// 写入项目签发配置文件，返回项目根。
+fn with_config(root: &Path, document: &str) {
+    std::fs::write(root.join("open-ssl.json"), document).expect("config file");
 }
 
 #[test]
@@ -78,12 +83,55 @@ fn a_dry_run_takes_no_lock_and_writes_nothing() {
 
 #[test]
 fn a_real_run_refuses_without_an_explicit_zone() {
-    // 没有 zone 时必须在任何网络与 DNS 动作之前失败，并且不留下半成品。
+    // 没有 zone 时必须在任何网络与 DNS 动作之前失败，并且不留下半成品；
+    // 错误消息要直接告诉用户配置文件的写法。
     let root = temp_project("no-zone");
     let error = run_acme_issue(&arguments(&root), false).expect_err("a real run must demand the zone");
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    assert!(error.message().contains("dnsZoneId") || error.message().contains("dnsZoneName"), "{}", error.message());
+    assert!(error.message().contains("zone") && error.message().contains("open-ssl.json"), "{}", error.message());
     assert!(!state_dir(&root).exists(), "被拒绝的签发不得创建状态目录");
+    cleanup(&root);
+}
+
+#[test]
+fn the_configuration_supplies_provider_and_zone() {
+    let root = temp_project("config-merge");
+    with_config(&root, r#"{"schema":"open-ssl/config/v0","dnsProvider":"cloudflare","zone":{"name":"example.test"},"kind":"staging"}"#);
+    let mut arguments = arguments(&root);
+    arguments.dns_provider = None;
+    arguments.kind = None;
+    let plan = run_acme_plan(&arguments).expect("config-driven plan");
+    assert_eq!(plan.dns_provider, "cloudflare", "配置必须补上 provider");
+    assert!(plan.dns_token_available);
+    cleanup(&root);
+}
+
+#[test]
+fn a_flag_overrides_the_configuration() {
+    let root = temp_project("config-override");
+    with_config(&root, r#"{"schema":"open-ssl/config/v0","dnsProvider":"manual"}"#);
+    let plan = run_acme_plan(&arguments(&root)).expect("flag wins");
+    assert_eq!(plan.dns_provider, "cloudflare", "显式旗标必须压过配置");
+    cleanup(&root);
+}
+
+#[test]
+fn without_flags_or_configuration_the_default_is_interactive_manual() {
+    let root = temp_project("config-default");
+    let mut arguments = arguments(&root);
+    arguments.dns_provider = None;
+    arguments.kind = None;
+    let plan = run_acme_plan(&arguments).expect("defaults resolve");
+    assert_eq!(plan.dns_provider, "manual", "零参数默认走交互式 manual");
+    cleanup(&root);
+}
+
+#[test]
+fn a_malformed_configuration_fails_explicitly() {
+    let root = temp_project("config-bad");
+    with_config(&root, r#"{"schema":"open-ssl/config/v1","dnsProvider":"cloudflare"}"#);
+    let error = run_acme_plan(&arguments(&root)).expect_err("未知 schema 必须显式失败");
+    assert_eq!(error.code(), ErrorCode::Protocol);
     cleanup(&root);
 }
 
@@ -102,7 +150,7 @@ fn a_real_run_refuses_both_zone_forms_at_once() {
 fn a_real_run_refuses_an_unsupported_provider() {
     let root = temp_project("other-provider");
     let mut arguments = arguments(&root);
-    arguments.dns_provider = "dnspod".to_owned();
+    arguments.dns_provider = Some("dnspod".to_owned());
     arguments.dns_zone_name = Some("example.test".to_owned());
     let error = run_acme_issue(&arguments, false).expect_err("dnspod 还不是受支持的 provider");
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
@@ -115,7 +163,7 @@ fn a_manual_plan_needs_no_secrets_file() {
     let root = std::env::temp_dir().join(format!("open-ssl-napi-manual-plan-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir_all(&root).expect("temp project root");
     let mut arguments = arguments(&root);
-    arguments.dns_provider = "manual".to_owned();
+    arguments.dns_provider = Some("manual".to_owned());
     let outcome = run_acme_issue(&arguments, true).expect("manual dry run");
     let plan = outcome.plan.expect("dry run carries the plan");
     assert!(plan.dns_token_available, "manual 由操作者放置记录，天然可用");
@@ -129,7 +177,7 @@ fn a_refused_run_never_echoes_the_token() {
     // 不触网的拒绝路径：provider 在秘密文件里没有 token。
     let root = temp_project("token-leak");
     let mut arguments = arguments(&root);
-    arguments.dns_provider = "route53".to_owned();
+    arguments.dns_provider = Some("route53".to_owned());
     arguments.dns_zone_name = Some("example.test".to_owned());
     let error = run_acme_issue(&arguments, false).expect_err("route53 没有配置秘密");
     assert!(!error.to_string().contains(TOKEN), "拒绝消息不得回显 token：{error}");

@@ -29,6 +29,7 @@ use open_ssl_core::{
         cloudflare::{Cloudflare, DEFAULT_API_BASE, PROVIDER_ID as CLOUDFLARE_PROVIDER, Zone},
         credentials::{ProjectRoot, ProjectSecrets},
     },
+    config::{IssueConfig, ResolvedTarget},
     flow::{self, FlowOptions},
     platform::{CapabilityItem, capabilities as core_capabilities, platform as core_platform},
     state::{DirectoryKind, IssuePlan, plan_issue},
@@ -390,14 +391,19 @@ fn audit_query(ctx: CallContext) -> Result<JsValue> {
 }
 
 /// Decoded options shared by `acmePlan` and `acmeIssue`.
+///
+/// `kind` and `dnsProvider` may be omitted: the project's `open-ssl.json`
+/// supplies them and the final defaults are `staging` and the interactive
+/// `manual` provider. A flag always wins over the configuration, so ordinary
+/// users only ever type the domains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueArguments {
     /// Project root that owns `.secrets/open-ssl.json`. `None` uses the process working directory.
     pub project_root: Option<PathBuf>,
-    /// ACME directory the request targets.
-    pub kind: DirectoryKind,
-    /// DNS provider id whose token the project secrets file must carry.
-    pub dns_provider: String,
+    /// ACME directory the request targets. `None` defers to the configuration.
+    pub kind: Option<DirectoryKind>,
+    /// DNS provider id. `None` defers to the configuration, then to `manual`.
+    pub dns_provider: Option<String>,
     /// Identifiers requested from the CA.
     pub identifiers: Vec<String>,
     /// Cloudflare zone id, when the caller manages the zone by id.
@@ -425,13 +431,40 @@ pub struct IssueOutcome {
     pub report: Option<flow::IssueReport>,
 }
 
+/// Merge flags, the project configuration, and the defaults into one target.
+///
+/// Precedence is fixed: flag > `open-ssl.json` > default (`staging`,
+/// `manual`). A present but malformed configuration file is an explicit
+/// failure; it never degrades into "no configuration".
+fn resolve_target(arguments: &IssueArguments) -> open_ssl_core::Result<(ProjectRoot, ResolvedTarget)> {
+    let project = resolve_project(arguments)?;
+    let config = IssueConfig::load(&project)?;
+    let kind = arguments.kind.or(config.as_ref().and_then(|entry| entry.kind)).unwrap_or(DirectoryKind::Staging);
+    let dns_provider = arguments
+        .dns_provider
+        .clone()
+        .or_else(|| config.as_ref().and_then(|entry| entry.dns_provider.clone()))
+        .unwrap_or_else(|| MANUAL_PROVIDER.to_owned());
+    let mut zone_id = arguments.dns_zone_id.clone();
+    let mut zone_name = arguments.dns_zone_name.clone();
+    if zone_id.is_none() && zone_name.is_none() {
+        if let Some(zone) = config.as_ref().and_then(|entry| entry.zone.clone()) {
+            zone_id = zone.id;
+            zone_name = zone.name;
+        }
+    }
+    let contact =
+        if arguments.contact.is_empty() { config.map(|entry| entry.contact).unwrap_or_default() } else { arguments.contact.clone() };
+    Ok((project, ResolvedTarget { kind, dns_provider, zone_id, zone_name, contact }))
+}
+
 /// Run the local-only plan behind `acmePlan`.
 ///
 /// Only project state and the availability of the provider token are read. It
 /// never returns a token, writes a file, or touches DNS.
 pub fn run_acme_plan(arguments: &IssueArguments) -> open_ssl_core::Result<IssuePlan> {
-    let project = resolve_project(arguments)?;
-    plan_issue(&project, arguments.kind, &arguments.dns_provider, &arguments.identifiers)
+    let (project, target) = resolve_target(arguments)?;
+    plan_issue(&project, target.kind, &target.dns_provider, &arguments.identifiers)
 }
 
 /// Run `acmeIssue`.
@@ -442,36 +475,40 @@ pub fn run_acme_plan(arguments: &IssueArguments) -> open_ssl_core::Result<IssueP
 /// flow, and any failure leaves a structured error with a non-zero exit code at
 /// the CLI boundary instead of a silent `blocked` result.
 pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
+    let (project, target) = resolve_target(arguments)?;
+    issue_with(&project, arguments, &target, dry_run)
+}
+
+fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &ResolvedTarget, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
     if dry_run {
-        let plan = run_acme_plan(arguments)?;
+        let plan = plan_issue(project, target.kind, &target.dns_provider, &arguments.identifiers)?;
         return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None });
     }
-    let project = resolve_project(arguments)?;
     let options = FlowOptions {
-        kind: arguments.kind,
-        directory_url: flow::directory_url(arguments.kind),
-        dns_provider: &arguments.dns_provider,
+        kind: target.kind,
+        directory_url: flow::directory_url(target.kind),
+        dns_provider: &target.dns_provider,
         identifiers: &arguments.identifiers,
-        contact: &arguments.contact,
+        contact: &target.contact,
         poll_attempts: 40,
         poll_delay: Duration::from_secs(3),
     };
     let transport = HttpsTransport::new();
-    let report = match arguments.dns_provider.as_str() {
+    let report = match target.dns_provider.as_str() {
         CLOUDFLARE_PROVIDER => {
-            let secrets = ProjectSecrets::load(&project)?;
-            let token = secrets.dns_token(&arguments.dns_provider)?;
-            let zone = resolve_zone(arguments)?;
+            let zone = resolve_zone(target)?;
+            let secrets = ProjectSecrets::load(project)?;
+            let token = secrets.dns_token(CLOUDFLARE_PROVIDER)?;
             let api_base = Url::parse(DEFAULT_API_BASE)
                 .map_err(|error| CoreError::new(ErrorCode::Internal, format!("Cloudflare API base is invalid: {error}")))?;
             let mut dns = Cloudflare::with_zone(transport.clone(), api_base, token, zone);
-            flow::issue(&project, &options, transport, &mut dns)?
+            flow::issue(project, &options, transport, &mut dns)?
         }
         MANUAL_PROVIDER => {
             // 交互式模式：没有 `.secrets` 也能签发。每条 TXT 打印给操作者人工放置，
             // 确认后由 CA 的 dns-01 挑战完成真正的校验。
             let mut dns = Manual::new(StdinPrompter);
-            flow::issue(&project, &options, transport, &mut dns)?
+            flow::issue(project, &options, transport, &mut dns)?
         }
         other => {
             return Err(invalid_argument(format!(
@@ -503,14 +540,17 @@ impl Prompter for StdinPrompter {
     }
 }
 
-/// The zone must be configured explicitly; the adapter never guesses it from
-/// the challenge name. Exactly one of id and name may be present.
-fn resolve_zone(arguments: &IssueArguments) -> open_ssl_core::Result<Zone> {
-    match (arguments.dns_zone_id.as_deref(), arguments.dns_zone_name.as_deref()) {
+/// The zone must be configured (in `open-ssl.json`) or passed explicitly; the
+/// adapter never guesses it from the challenge name. Exactly one of id and
+/// name may be present.
+fn resolve_zone(target: &ResolvedTarget) -> open_ssl_core::Result<Zone> {
+    match (target.zone_id.as_deref(), target.zone_name.as_deref()) {
         (Some(id), None) => Zone::id(id),
         (None, Some(name)) => Zone::name(name),
-        (Some(_), Some(_)) => Err(invalid_argument("`dnsZoneId` and `dnsZoneName` are mutually exclusive")),
-        (None, None) => Err(invalid_argument("`acme-issue` requires `dnsZoneId` or `dnsZoneName` for the cloudflare provider")),
+        (Some(_), Some(_)) => Err(invalid_argument("the `zone` must give exactly one of `id` and `name`")),
+        (None, None) => Err(invalid_argument(
+            "the cloudflare provider needs a zone: set `zone.name` or `zone.id` in `open-ssl.json`, or pass `--dns-zone-name` / `--dns-zone-id`",
+        )),
     }
 }
 
@@ -539,8 +579,14 @@ fn issue_object(arg: Option<JsValue>, capability: &str) -> std::result::Result<J
 
 fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreError> {
     let project_root = optional_project_root(object)?;
-    let kind = directory_kind(&required_string(object, "kind")?)?;
-    let dns_provider = required_string(object, "dnsProvider")?;
+    // `kind` and `dnsProvider` may be omitted; the project configuration and
+    // then the defaults supply them.
+    let kind = optional_string_prop(object, "kind")
+        .map_err(napi_error)?
+        .as_deref()
+        .map(directory_kind)
+        .transpose()?;
+    let dns_provider = optional_string_prop(object, "dnsProvider").map_err(napi_error)?;
     let identifiers = string_array(object, "identifiers")?;
     let dns_zone_id = optional_string_prop(object, "dnsZoneId").map_err(napi_error)?;
     let dns_zone_name = optional_string_prop(object, "dnsZoneName").map_err(napi_error)?;
@@ -622,18 +668,20 @@ fn string_array(object: JsValue, name: &str) -> std::result::Result<Vec<String>,
     Ok(items)
 }
 
-fn issue_params(arguments: &IssueArguments, dry_run: Option<bool>) -> Value {
+/// Audit parameters describe the effective target, not the raw flags: they
+/// carry the merged kind, provider, zone, and contacts.
+fn issue_params(target: &ResolvedTarget, identifiers: &[String], dry_run: Option<bool>) -> Value {
     let mut params = json!({
-        "kind": arguments.kind.as_str(),
-        "dnsProvider": &arguments.dns_provider,
-        "identifiers": &arguments.identifiers,
-        "contact": &arguments.contact,
+        "kind": target.kind.as_str(),
+        "dnsProvider": &target.dns_provider,
+        "identifiers": identifiers,
+        "contact": &target.contact,
     });
     if let Some(object) = params.as_object_mut() {
-        if let Some(id) = &arguments.dns_zone_id {
+        if let Some(id) = &target.zone_id {
             object.insert("dnsZoneId".to_owned(), Value::String(id.clone()));
         }
-        if let Some(name) = &arguments.dns_zone_name {
+        if let Some(name) = &target.zone_name {
             object.insert("dnsZoneName".to_owned(), Value::String(name.clone()));
         }
     }
@@ -644,12 +692,12 @@ fn issue_params(arguments: &IssueArguments, dry_run: Option<bool>) -> Value {
 }
 
 /// Target summary: identifiers, directory, and provider only. No token and no path.
-fn plan_summary(arguments: &IssueArguments) -> String {
-    format!("{} identifier(s) against the {} directory via {}", arguments.identifiers.len(), arguments.kind.as_str(), arguments.dns_provider)
+fn plan_summary(target: &ResolvedTarget, identifiers: &[String]) -> String {
+    format!("{} identifier(s) against the {} directory via {}", identifiers.len(), target.kind.as_str(), target.dns_provider)
 }
 
-fn issue_summary(arguments: &IssueArguments, outcome: &IssueOutcome) -> String {
-    let base = plan_summary(arguments);
+fn issue_summary(target: &ResolvedTarget, identifiers: &[String], outcome: &IssueOutcome) -> String {
+    let base = plan_summary(target, identifiers);
     match &outcome.report {
         Some(report) => format!("{base}: delivered generation {}", report.generation),
         None => format!("{base}: dry run"),
@@ -660,10 +708,11 @@ fn issue_summary(arguments: &IssueArguments, outcome: &IssueOutcome) -> String {
 fn acme_plan(ctx: CallContext) -> Result<JsValue> {
     let object = issue_object(object_arg(&ctx)?, "acmePlan").map_err(core_error)?;
     let arguments = issue_arguments(object).map_err(core_error)?;
-    let params = issue_params(&arguments, None);
+    let (project, target) = resolve_target(&arguments).map_err(core_error)?;
+    let params = issue_params(&target, &arguments.identifiers, None);
     let plan = audit::run(capability_ids::ACME_PLAN, Mode::DryRun, params, || {
-        let plan = run_acme_plan(&arguments)?;
-        Ok((plan, Summary::new(arguments.identifiers.len() as u64, plan_summary(&arguments))))
+        let plan = plan_issue(&project, target.kind, &target.dns_provider, &arguments.identifiers)?;
+        Ok((plan, Summary::new(arguments.identifiers.len() as u64, plan_summary(&target, &arguments.identifiers))))
     })
     .map_err(core_error)?;
     value_to_js(&ctx, &plan)
@@ -674,11 +723,12 @@ fn acme_issue(ctx: CallContext) -> Result<JsValue> {
     let object = issue_object(object_arg(&ctx)?, "acmeIssue").map_err(core_error)?;
     let arguments = issue_arguments(object).map_err(core_error)?;
     let dry_run = required_bool(object, "dryRun").map_err(core_error)?;
+    let (project, target) = resolve_target(&arguments).map_err(core_error)?;
     let mode = if dry_run { Mode::DryRun } else { Mode::Execute };
-    let params = issue_params(&arguments, Some(dry_run));
+    let params = issue_params(&target, &arguments.identifiers, Some(dry_run));
     let outcome = audit::run(capability_ids::ACME_ISSUE, mode, params, || {
-        let outcome = run_acme_issue(&arguments, dry_run)?;
-        let summary = Summary::new(arguments.identifiers.len() as u64, issue_summary(&arguments, &outcome));
+        let outcome = issue_with(&project, &arguments, &target, dry_run)?;
+        let summary = Summary::new(arguments.identifiers.len() as u64, issue_summary(&target, &arguments.identifiers, &outcome));
         Ok((outcome, summary))
     })
     .map_err(core_error)?;
