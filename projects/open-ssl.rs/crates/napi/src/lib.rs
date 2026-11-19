@@ -450,11 +450,12 @@ fn resolve_target(arguments: &IssueArguments) -> open_ssl_core::Result<(ProjectR
         .unwrap_or_else(|| MANUAL_PROVIDER.to_owned());
     let mut zone_id = arguments.dns_zone_id.clone();
     let mut zone_name = arguments.dns_zone_name.clone();
-    if zone_id.is_none() && zone_name.is_none() {
-        if let Some(zone) = config.as_ref().and_then(|entry| entry.zone.clone()) {
-            zone_id = zone.id;
-            zone_name = zone.name;
-        }
+    if zone_id.is_none()
+        && zone_name.is_none()
+        && let Some(zone) = config.as_ref().and_then(|entry| entry.zone.clone())
+    {
+        zone_id = zone.id;
+        zone_name = zone.name;
     }
     let contact = if arguments.contact.is_empty() { config.map(|entry| entry.contact).unwrap_or_default() } else { arguments.contact.clone() };
     Ok((project, ResolvedTarget { kind, dns_provider, zone_id, zone_name, contact }))

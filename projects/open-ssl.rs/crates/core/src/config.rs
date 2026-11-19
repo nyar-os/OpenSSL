@@ -83,10 +83,10 @@ impl IssueConfig {
         if self.schema != CONFIG_SCHEMA {
             return Err(Error::new(ErrorCode::Protocol, format!("项目配置文件 `{}` 没有声明 `{CONFIG_SCHEMA}` schema", file.display())));
         }
-        if let Some(provider) = &self.dns_provider {
-            if provider.trim().is_empty() {
-                return Err(Error::new(ErrorCode::Protocol, format!("项目配置文件 `{}` 的 `dnsProvider` 为空", file.display())));
-            }
+        if let Some(provider) = &self.dns_provider
+            && provider.trim().is_empty()
+        {
+            return Err(Error::new(ErrorCode::Protocol, format!("项目配置文件 `{}` 的 `dnsProvider` 为空", file.display())));
         }
         if let Some(zone) = &self.zone {
             let id_set = zone.id.as_deref().is_some_and(|value| !value.trim().is_empty());
