@@ -137,8 +137,12 @@ packages:
       typescript:
         optional: true
 
+  '@wae/commander@0.0.6':
+    resolution: {integrity: sha512-jRTwhX6iHPPQuchs4+BIfbrEjulGNV8w837jhwr+uxPTXOe+iWXw77OXz285jyEaLKZEGEq8FArJBW/YJWzFGA==}
+    engines: {node: '>=20'}
+
   '@wae/commander@0.0.7':
-    resolution: {}
+    resolution: {integrity: sha512-9YvQuL64SDEJb7MzG6h0ZysEHHRhRkV+aMIIUuCyoKRkhw9prLAfYrWhXKwZfFVCPMWyAF1KS9ulozNCzq1zow==}
     engines: {node: '>=20'}
 
   '@wae/wae-darwin-arm64@0.0.6':
@@ -323,6 +327,8 @@ snapshots:
       typescript: 5.9.3
     transitivePeerDependencies:
       - canvas
+
+  '@wae/commander@0.0.6': {}
 
   '@wae/commander@0.0.7': {}
 
