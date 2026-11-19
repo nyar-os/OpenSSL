@@ -380,6 +380,14 @@ pub fn parse_authorization(url: &str, body: &[u8]) -> Result<Authorization> {
         .ok_or_else(|| Error::new(ErrorCode::Protocol, "authorization is missing the `challenges` array"))?;
     let mut parsed = Vec::with_capacity(challenges.len());
     for challenge in challenges {
+        // RFC 8555 §3.2.6: a client MUST ignore challenge objects whose type it
+        // does not understand (LE staging now offers `dns-persist-01`), while
+        // still rejecting malformed challenges of known types.
+        if let Some(raw) = challenge.get("type").and_then(Value::as_str) {
+            if ChallengeType::parse(raw).is_err() {
+                continue;
+            }
+        }
         parsed.push(parse_challenge(url, challenge.to_string().as_bytes())?);
     }
     Ok(Authorization {

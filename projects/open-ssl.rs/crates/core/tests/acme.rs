@@ -443,6 +443,26 @@ fn a_wildcard_authorization_keeps_the_flag_and_shares_the_record_name() {
 }
 
 #[test]
+fn unknown_challenge_types_are_ignored_not_fatal() {
+    // RFC 8555 §3.2.6：真实 LE staging 已在 dns-01 前面提供 `dns-persist-01`，
+    // 未知类型必须被跳过，dns-01 仍可取到。
+    let body = serde_json::json!({
+        "status": "pending",
+        "identifier": { "type": "dns", "value": "*.wxtoken.work" },
+        "wildcard": true,
+        "challenges": [
+            { "url": "https://acme.example.test/challenge/persist", "type": "dns-persist-01", "token": "persist-tok" },
+            { "url": "https://acme.example.test/challenge/1", "type": "dns-01", "token": "tok" },
+        ],
+    })
+    .to_string();
+    let authorization = parse_authorization("https://acme.example.test/authz/1", body.as_bytes()).expect("未知类型被忽略");
+    assert_eq!(authorization.challenges.len(), 1);
+    let challenge = authorization.dns01().expect("dns-01 仍然可选");
+    assert_eq!(challenge.token, "tok");
+}
+
+#[test]
 fn order_poll_verdicts_distinguish_progress_from_terminal_states() {
     assert_eq!(order_poll_verdict(OrderStatus::Pending), OrderPollVerdict::Pending);
     assert_eq!(order_poll_verdict(OrderStatus::Ready), OrderPollVerdict::Pending);
