@@ -167,7 +167,8 @@ impl ProjectSecrets {
 fn display_canonical(path: PathBuf) -> PathBuf {
     const VERBATIM_PREFIX: &str = r"\\?\";
     let text = path.to_string_lossy();
-    let Some(stripped) = text.strip_prefix(VERBATIM_PREFIX) else {
+    let Some(stripped) = text.strip_prefix(VERBATIM_PREFIX)
+    else {
         return path;
     };
     if stripped.starts_with("UNC\\") || stripped.chars().count() >= 240 {

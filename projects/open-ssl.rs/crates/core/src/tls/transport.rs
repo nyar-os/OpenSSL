@@ -11,18 +11,17 @@
 //! non-2xx response as a protocol result and never rely on transport-level
 //! redirects.
 
-use std::{
-    io,
-    time::Duration,
-};
+use std::{io, time::Duration};
 
 use boost_net::{
     NetError,
     http::{Headers, Request, Response, Transport, Url},
 };
 
-use crate::x509::TrustAnchor;
-use crate::tls::{ClientConfig, TlsClient};
+use crate::{
+    tls::{ClientConfig, TlsClient},
+    x509::TrustAnchor,
+};
 
 /// Maximum response body accepted by this adapter.
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -59,11 +58,7 @@ impl Transport for HttpsTransport {
         if request.url.scheme() != "https" {
             return Err(NetError::Unsupported(format!("`{}` is not an HTTPS target", request.url)));
         }
-        let host = request
-            .url
-            .host_str()
-            .ok_or_else(|| NetError::Protocol(format!("URL `{}` has no host", request.url)))?
-            .to_owned();
+        let host = request.url.host_str().ok_or_else(|| NetError::Protocol(format!("URL `{}` has no host", request.url)))?.to_owned();
         let port = request.url.port_or_known_default().unwrap_or(443);
         let target = match request.url.query() {
             Some(query) => format!("{}?{query}", path_of(&request.url)),
@@ -111,7 +106,10 @@ fn path_of(url: &Url) -> String {
 
 /// Parse one HTTP/1.1 response that was fully read until the peer closed.
 fn parse_response(url: &Url, raw: &[u8]) -> Result<Response, NetError> {
-    let split = raw.windows(4).position(|window| window == b"\r\n\r\n").ok_or_else(|| NetError::Protocol("the response has no header terminator".to_owned()))?;
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| NetError::Protocol("the response has no header terminator".to_owned()))?;
     let head = std::str::from_utf8(&raw[..split]).map_err(|_| NetError::Protocol("the response head is not UTF-8".to_owned()))?;
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
@@ -120,7 +118,8 @@ fn parse_response(url: &Url, raw: &[u8]) -> Result<Response, NetError> {
     if !version.starts_with("HTTP/") {
         return Err(NetError::Protocol(format!("bad status line `{status_line}`")));
     }
-    let status = parts.next().and_then(|code| code.parse::<u16>().ok()).ok_or_else(|| NetError::Protocol(format!("bad status line `{status_line}`")))?;
+    let status =
+        parts.next().and_then(|code| code.parse::<u16>().ok()).ok_or_else(|| NetError::Protocol(format!("bad status line `{status_line}`")))?;
 
     let mut headers = Headers::new();
     for line in lines {

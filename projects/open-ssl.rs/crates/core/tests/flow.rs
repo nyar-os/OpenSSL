@@ -99,7 +99,15 @@ fn extension_der(oid: open_ssl_core::der::Oid, value: &[u8]) -> Vec<u8> {
     w.finish()
 }
 
-fn issue(serial: u64, cn: &str, subject_key: &VerifyingKey, issuer_cn: &str, issuer_key: &SigningKey, ca: bool, dns: Option<Vec<u8>>) -> Vec<u8> {
+fn issue(
+    serial: u64,
+    cn: &str,
+    subject_key: &VerifyingKey,
+    issuer_cn: &str,
+    issuer_key: &SigningKey,
+    ca: bool,
+    dns: Option<Vec<u8>>,
+) -> Vec<u8> {
     let mut exts = Vec::new();
     if ca {
         let mut bc = Writer::new();
@@ -146,11 +154,8 @@ fn project_root(tag: &str) -> (open_ssl_core::dns::credentials::ProjectRoot, Pat
     let root = std::env::temp_dir().join(format!("open-ssl-flow-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join(".secrets")).expect("secrets dir");
-    fs::write(
-        root.join(".secrets/open-ssl.json"),
-        r#"{"schema":"open-ssl/secrets/v0","dns":{"cloudflare":{"apiToken":"test-token"}}}"#,
-    )
-    .expect("secrets file");
+    fs::write(root.join(".secrets/open-ssl.json"), r#"{"schema":"open-ssl/secrets/v0","dns":{"cloudflare":{"apiToken":"test-token"}}}"#)
+        .expect("secrets file");
     (open_ssl_core::dns::credentials::ProjectRoot::new(&root).expect("project root"), root)
 }
 
@@ -159,7 +164,15 @@ fn chain_for(leaf_key: &VerifyingKey) -> String {
     let intermediate_key = SigningKey::from_slice(&[22u8; 32]).expect("intermediate key");
     let ca_der = issue(1, "Flow Test CA", ca_key.verifying_key(), "Flow Test CA", &ca_key, true, None);
     let intermediate_der = issue(2, "Flow Test Intermediate", intermediate_key.verifying_key(), "Flow Test CA", &ca_key, true, None);
-    let leaf_der = issue(3, "example.test", leaf_key, "Flow Test Intermediate", &intermediate_key, false, Some(san_der(&["example.test", "*.example.test"])));
+    let leaf_der = issue(
+        3,
+        "example.test",
+        leaf_key,
+        "Flow Test Intermediate",
+        &intermediate_key,
+        false,
+        Some(san_der(&["example.test", "*.example.test"])),
+    );
     let _ = Certificate::parse(&ca_der).expect("ca parses");
     format!("{}{}", pem_encode("CERTIFICATE", &leaf_der), pem_encode("CERTIFICATE", &intermediate_der))
 }
@@ -239,7 +252,9 @@ fn script(chain_pem: String, authz_valid: Arc<AtomicBool>) -> mock::Script {
                 body["certificate"] = Value::String(format!("{base}/cert/1"));
                 mock::MockResponse::json(200, &body.to_string()).with_header("Replay-Nonce", "nonce-poll")
             }
-            ("POST", "/cert/1") => mock::MockResponse::text(200, "application/pem-certificate-chain", &chain_pem).with_header("Replay-Nonce", "nonce-cert"),
+            ("POST", "/cert/1") => {
+                mock::MockResponse::text(200, "application/pem-certificate-chain", &chain_pem).with_header("Replay-Nonce", "nonce-cert")
+            }
             _ => mock::MockResponse::json(500, r#"{"type":"urn:ietf:params:acme:error:serverInternal","detail":"unhandled fixture path"}"#),
         }
     })
@@ -283,7 +298,8 @@ fn full_issuance_delivers_a_real_generation_and_cleans_dns() {
 
     let server = mock::MockServer::start(script(chain, Arc::new(AtomicBool::new(false))));
     let mut dns = FakeDns::new();
-    let report = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("issuance succeeds");
+    let report = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns)
+        .expect("issuance succeeds");
 
     assert_eq!(report.account_url, server.url("/account/42"));
     assert_eq!(report.order_url, server.url("/order/1"));
@@ -321,10 +337,12 @@ fn second_run_reuses_the_account_and_issues_a_new_generation() {
     let authz_valid = Arc::new(AtomicBool::new(false));
     let server = mock::MockServer::start(script(chain.clone(), Arc::clone(&authz_valid)));
     let mut dns = FakeDns::new();
-    let first = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("first run");
+    let first =
+        flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("first run");
 
     authz_valid.store(false, Ordering::SeqCst);
-    let second = flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("second run");
+    let second =
+        flow::issue_api(&project, &options(&server.url("/directory"), &identifiers), HttpTransport::new(), &mut dns).expect("second run");
     assert_ne!(first.generation, second.generation, "每次成功交付都是新的一代");
 
     let accounts = server.requests().iter().filter(|request| request.route() == "/new-account").count();
@@ -396,7 +414,8 @@ fn manual_prepare_returns_instructions_without_responding() {
     let server = mock::MockServer::start(script("not needed".to_owned(), Arc::new(AtomicBool::new(false))));
     let directory = server.url("/directory");
 
-    let outcome = flow::issue_manual(&project, &manual_options(&directory, &identifiers), HttpTransport::new(), None).expect("prepare succeeds");
+    let outcome =
+        flow::issue_manual(&project, &manual_options(&directory, &identifiers), HttpTransport::new(), None).expect("prepare succeeds");
     let action = pending_action(outcome);
 
     assert_eq!(action.records.len(), 2, "裸域与泛域名各需一条指引");
@@ -430,7 +449,8 @@ fn manual_resume_delivers_and_consumes_the_action() {
     let flow_options = manual_options(&directory, &identifiers);
 
     let action = pending_action(flow::issue_manual(&project, &flow_options, HttpTransport::new(), None).expect("prepare succeeds"));
-    let report = delivered(flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id)).expect("resume succeeds"));
+    let report =
+        delivered(flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id)).expect("resume succeeds"));
 
     assert_eq!(report.sans, vec!["example.test".to_owned(), "*.example.test".to_owned()]);
     assert_eq!(report.manual_records_to_remove, action.records, "交付后必须把待删除指引回传给操作者");
@@ -452,14 +472,16 @@ fn manual_resume_rejects_unknown_and_expired_actions() {
     let flow_options = manual_options(&directory, &identifiers);
     let action = pending_action(flow::issue_manual(&project, &flow_options, HttpTransport::new(), None).expect("prepare succeeds"));
 
-    let unknown = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some("dns01-deadbeefdeadbeef")).expect_err("unknown action must be rejected");
+    let unknown = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some("dns01-deadbeefdeadbeef"))
+        .expect_err("unknown action must be rejected");
     assert_eq!(unknown.code(), open_ssl_core::ErrorCode::InvalidArgument);
 
     let store = open_ssl_core::state::StateStore::new(&project);
     let mut expired = store.action(&action.action_id).expect("action").expect("persisted");
     expired.expires_unix = 1;
     store.save_action(&expired).expect("rewrite action");
-    let error = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id)).expect_err("expired action must be rejected");
+    let error = flow::issue_manual(&project, &flow_options, HttpTransport::new(), Some(&action.action_id))
+        .expect_err("expired action must be rejected");
     assert_eq!(error.code(), open_ssl_core::ErrorCode::InvalidArgument);
     let _ = fs::remove_dir_all(root);
 }

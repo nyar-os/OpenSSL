@@ -294,11 +294,7 @@ impl Delivery {
     /// 已提交 generation 的落盘位置：公开证书、链与受控私钥文件。
     pub fn paths(&self, id: &str) -> GenerationPaths {
         let directory = self.generations_dir().join(id);
-        GenerationPaths {
-            certificate: directory.join(CERT_FILE),
-            chain: directory.join(CHAIN_FILE),
-            private_key: directory.join(KEY_FILE),
-        }
+        GenerationPaths { certificate: directory.join(CERT_FILE), chain: directory.join(CHAIN_FILE), private_key: directory.join(KEY_FILE) }
     }
 
     /// 写指针临时文件，再用同目录 `rename` 覆盖 `current`。

@@ -31,12 +31,14 @@ use crate::{
     acme::{AcmeClient, AuthorizationStatus},
     csr,
     delivery::Delivery,
-    dns::{DnsProvider, TxtRecord},
-    dns::credentials::ProjectRoot,
+    dns::{DnsProvider, TxtRecord, credentials::ProjectRoot},
     errors::{Error, ErrorCode, Result},
     keys,
     lock::ProjectLock,
-    state::{AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, PendingAction, StateStore, TxtInstruction, plan_issue},
+    state::{
+        AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, PendingAction, StateStore, TxtInstruction,
+        plan_issue,
+    },
     x509::{Certificate, pem_bundle, pem_encode},
 };
 
@@ -139,7 +141,12 @@ pub struct IssueReport {
 /// 执行一次 API provider 驱动的真实签发：provider 自己落位记录，单 run 完成。
 ///
 /// 锁覆盖完整流程。失败时已发布的 TXT 仍会被清理，账户与订单状态保留供续跑。
-pub fn issue_api<T: Transport, D: DnsProvider>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, dns: &mut D) -> Result<IssueReport> {
+pub fn issue_api<T: Transport, D: DnsProvider>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    transport: T,
+    dns: &mut D,
+) -> Result<IssueReport> {
     let _lock = ProjectLock::acquire(project)?;
     let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
     let store = StateStore::new(project);
@@ -167,7 +174,13 @@ pub fn issue_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'
 }
 
 /// 建立账户与订单上下文：账户复用/新建、订单复用/新建，返回可继续推进的状态。
-fn bootstrap_order<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, order_id: &str) -> Result<(AcmeClient<T>, String, OrderState, crate::acme::Order)> {
+fn bootstrap_order<T: Transport>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    transport: T,
+    store: &StateStore,
+    order_id: &str,
+) -> Result<(AcmeClient<T>, String, OrderState, crate::acme::Order)> {
     let account_key = keys::account_key(project, options.kind)?;
     let thumbprint = account_key.thumbprint();
     let mut client = AcmeClient::bootstrap(transport, account_key, options.directory_url)?;
@@ -175,10 +188,7 @@ fn bootstrap_order<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_
     let account_url = match store.account(options.kind)? {
         Some(account) => {
             if account.key_thumbprint != thumbprint {
-                return Err(Error::new(
-                    ErrorCode::Protocol,
-                    "本地账户密钥与状态文件记录的 thumbprint 不一致，拒绝使用另一个身份续跑",
-                ));
+                return Err(Error::new(ErrorCode::Protocol, "本地账户密钥与状态文件记录的 thumbprint 不一致，拒绝使用另一个身份续跑"));
             }
             client.bind_account(account.account_url.clone());
             account.account_url
@@ -276,7 +286,13 @@ fn run_api<T: Transport, D: DnsProvider>(
 }
 
 /// manual prepare：取到全部 TXT 指引并落盘，不回复任何挑战。
-fn prepare_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, plan: &IssuePlan) -> Result<FlowOutcome> {
+fn prepare_manual<T: Transport>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    transport: T,
+    store: &StateStore,
+    plan: &IssuePlan,
+) -> Result<FlowOutcome> {
     let id = order_id(options.kind, options.identifiers);
     let (mut client, _account_url, mut order_state, order) = bootstrap_order(project, options, transport, store, &id)?;
 
@@ -332,13 +348,23 @@ fn prepare_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>
 }
 
 /// manual resume：校验动作后对同一订单回复挑战、轮询并交付。
-fn resume_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, store: &StateStore, plan: &IssuePlan, requested_id: &str) -> Result<IssueReport> {
-    let action = store
-        .action(requested_id)?
-        .ok_or_else(|| Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 不存在或已被消费，请重新运行不带 `--action` 的签发获取指引")))?;
+fn resume_manual<T: Transport>(
+    project: &ProjectRoot,
+    options: &FlowOptions<'_>,
+    transport: T,
+    store: &StateStore,
+    plan: &IssuePlan,
+    requested_id: &str,
+) -> Result<IssueReport> {
+    let action = store.action(requested_id)?.ok_or_else(|| {
+        Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 不存在或已被消费，请重新运行不带 `--action` 的签发获取指引"))
+    })?;
 
     if action.kind != options.kind {
-        return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 `{requested_id}` 属于 `{}` directory，与本次请求不一致", action.kind.as_str())));
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            format!("动作 `{requested_id}` 属于 `{}` directory，与本次请求不一致", action.kind.as_str()),
+        ));
     }
     let fingerprint = input_fingerprint(options.kind, plan);
     if action.input_fingerprint != fingerprint {
@@ -376,10 +402,7 @@ fn resume_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>,
         }
         let challenge = client.dns_challenge(url)?;
         if challenge.record_fqdn() != state.record_fqdn {
-            return Err(Error::new(
-                ErrorCode::Protocol,
-                format!("授权 `{url}` 的记录名与 prepare 时落盘的不一致，拒绝继续"),
-            ));
+            return Err(Error::new(ErrorCode::Protocol, format!("授权 `{url}` 的记录名与 prepare 时落盘的不一致，拒绝继续")));
         }
         client.respond_challenge(&challenge.challenge.url)?;
         poll_authorization(&mut client, url, options.poll_attempts, options.poll_delay)?;
@@ -389,7 +412,8 @@ fn resume_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>,
     order_state.phase = OrderPhase::Authorized;
     store.save_order(&order_state)?;
 
-    let report = finalize_and_deliver(project, options, &mut client, account_url, store, plan, &id, &mut order_state, order, action.records.clone())?;
+    let report =
+        finalize_and_deliver(project, options, &mut client, account_url, store, plan, &id, &mut order_state, order, action.records.clone())?;
     store.delete_action(requested_id)?;
     Ok(report)
 }
@@ -419,10 +443,8 @@ fn finalize_and_deliver<T: Transport>(
     order_state.phase = OrderPhase::Submitted;
     store.save_order(order_state)?;
     let order = client.poll_order(&order.url, options.poll_attempts, options.poll_delay)?;
-    let certificate_url = order
-        .certificate
-        .clone()
-        .ok_or_else(|| Error::new(ErrorCode::Protocol, "订单已 valid，但响应没有 certificate URL"))?;
+    let certificate_url =
+        order.certificate.clone().ok_or_else(|| Error::new(ErrorCode::Protocol, "订单已 valid，但响应没有 certificate URL"))?;
 
     let chain_pem = client.certificate(&certificate_url)?;
     let certificates = pem_bundle("CERTIFICATE", &chain_pem);

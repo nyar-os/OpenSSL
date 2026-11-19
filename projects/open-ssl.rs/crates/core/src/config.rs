@@ -12,11 +12,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Error, ErrorCode, Result,
-    dns::credentials::ProjectRoot,
-    state::DirectoryKind,
-};
+use crate::{Error, ErrorCode, Result, dns::credentials::ProjectRoot, state::DirectoryKind};
 
 /// 本 crate 唯一接受的配置 schema。
 pub const CONFIG_SCHEMA: &str = "open-ssl/config/v0";

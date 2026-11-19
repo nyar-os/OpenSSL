@@ -90,9 +90,7 @@ pub fn private_key_pem(key: &SigningKey) -> Result<String> {
 }
 
 fn encode_pem(key: &SigningKey) -> Result<String> {
-    let document = key
-        .to_pkcs8_der()
-        .map_err(|error| Error::new(ErrorCode::Internal, format!("私钥无法编码为 PKCS#8：{error}")))?;
+    let document = key.to_pkcs8_der().map_err(|error| Error::new(ErrorCode::Internal, format!("私钥无法编码为 PKCS#8：{error}")))?;
     Ok(pem_body(document.as_bytes()))
 }
 
@@ -126,9 +124,8 @@ fn write_private(file: &Path, text: &str) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut handle = options
-        .open(file)
-        .map_err(|error| Error::new(ErrorCode::Io, format!("无法创建私钥文件 `{}`：{error}", file.display())))?;
+    let mut handle =
+        options.open(file).map_err(|error| Error::new(ErrorCode::Io, format!("无法创建私钥文件 `{}`：{error}", file.display())))?;
     handle
         .write_all(text.as_bytes())
         .and_then(|()| handle.sync_all())

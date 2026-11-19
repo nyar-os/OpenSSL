@@ -394,7 +394,8 @@ impl StateStore {
             return Err(Error::new(ErrorCode::InvalidArgument, format!("动作 id `{id}` 不是合法的状态文件名")));
         }
         let file = self.actions_dir().join(format!("{id}{JSON_SUFFIX}"));
-        let Some(action) = read_state::<PendingAction>(&file, "动作状态")? else {
+        let Some(action) = read_state::<PendingAction>(&file, "动作状态")?
+        else {
             return Ok(None);
         };
         if action.id != id {

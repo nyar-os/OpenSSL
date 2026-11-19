@@ -12,23 +12,18 @@
 
 #![deny(missing_docs)]
 
-use std::{
-    cell::RefCell,
-    env,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{cell::RefCell, env, path::PathBuf, time::Duration};
 
 use boost_net::http::Url;
 use open_ssl_core::{
     CapabilityState, Error as CoreError, ErrorCode,
     audit::capability_ids,
+    config::{IssueConfig, ResolvedTarget},
     dns::{
         MANUAL_PROVIDER,
         cloudflare::{Cloudflare, DEFAULT_API_BASE, PROVIDER_ID as CLOUDFLARE_PROVIDER, Zone},
         credentials::{ProjectRoot, ProjectSecrets},
     },
-    config::{IssueConfig, ResolvedTarget},
     flow::{self, FlowOptions, FlowOutcome},
     platform::{CapabilityItem, capabilities as core_capabilities, platform as core_platform},
     state::{DirectoryKind, IssuePlan, plan_issue},
@@ -461,8 +456,7 @@ fn resolve_target(arguments: &IssueArguments) -> open_ssl_core::Result<(ProjectR
             zone_name = zone.name;
         }
     }
-    let contact =
-        if arguments.contact.is_empty() { config.map(|entry| entry.contact).unwrap_or_default() } else { arguments.contact.clone() };
+    let contact = if arguments.contact.is_empty() { config.map(|entry| entry.contact).unwrap_or_default() } else { arguments.contact.clone() };
     Ok((project, ResolvedTarget { kind, dns_provider, zone_id, zone_name, contact }))
 }
 
@@ -487,7 +481,12 @@ pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_cor
     issue_with(&project, arguments, &target, dry_run)
 }
 
-fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &ResolvedTarget, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
+fn issue_with(
+    project: &ProjectRoot,
+    arguments: &IssueArguments,
+    target: &ResolvedTarget,
+    dry_run: bool,
+) -> open_ssl_core::Result<IssueOutcome> {
     if dry_run {
         let plan = plan_issue(project, target.kind, &target.dns_provider, &arguments.identifiers)?;
         return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None, action_required: None });
@@ -573,11 +572,7 @@ fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreE
     let project_root = optional_project_root(object)?;
     // `kind` and `dnsProvider` may be omitted; the project configuration and
     // then the defaults supply them.
-    let kind = optional_string_prop(object, "kind")
-        .map_err(napi_error)?
-        .as_deref()
-        .map(directory_kind)
-        .transpose()?;
+    let kind = optional_string_prop(object, "kind").map_err(napi_error)?.as_deref().map(directory_kind).transpose()?;
     let dns_provider = optional_string_prop(object, "dnsProvider").map_err(napi_error)?;
     let identifiers = string_array(object, "identifiers")?;
     let dns_zone_id = optional_string_prop(object, "dnsZoneId").map_err(napi_error)?;

@@ -161,7 +161,8 @@ fn a_real_run_refuses_an_unsupported_provider() {
 #[test]
 fn a_manual_plan_needs_no_secrets_file() {
     // 交互式模式的前提：没有 `.secrets` 也能出计划，token 天然可用。
-    let root = std::env::temp_dir().join(format!("open-ssl-napi-manual-plan-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
+    let root =
+        std::env::temp_dir().join(format!("open-ssl-napi-manual-plan-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir_all(&root).expect("temp project root");
     let mut arguments = arguments(&root);
     arguments.dns_provider = Some("manual".to_owned());
