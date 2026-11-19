@@ -39,7 +39,13 @@ export interface NativeBindings {
     acmeIssue(options: AcmeIssueOptions): unknown;
 }
 
-/** Non-secret issuance target shared by plan and issue. */
+/**
+ * Non-secret issuance target shared by plan and issue.
+ *
+ * `dnsProvider` is `cloudflare` (token from the project secrets file) or
+ * `manual` (interactive record placement on the terminal; works without any
+ * `.secrets` directory).
+ */
 export interface AcmeTargetOptions {
     kind: 'staging' | 'production';
     dnsProvider: string;
@@ -47,7 +53,7 @@ export interface AcmeTargetOptions {
     projectRoot?: string;
 }
 
-/** Full issuance options; a real run additionally demands exactly one zone form. */
+/** Full issuance options; a real `cloudflare` run additionally demands exactly one zone form. */
 export interface AcmeIssueOptions extends AcmeTargetOptions {
     dryRun: boolean;
     dnsZoneId?: string;

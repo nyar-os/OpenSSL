@@ -34,7 +34,7 @@
             "limit": "Maximum number of audit records",
             "content-dir": "Directory containing the staged GUI build",
             "acme-kind": "ACME directory to target: staging or production",
-            "dns-provider": "DNS provider id whose token the project secrets file must carry",
+            "dns-provider": "DNS provider: cloudflare (token from .secrets/open-ssl.json) or manual (interactive record placement, no secrets needed)",
             "identifier": "Subject identifier to certify; repeat for several names",
             "contact": "Account contact URI, for example mailto:ops@example.com; repeatable",
             "dns-zone-id": "Cloudflare zone id managing the challenge records",

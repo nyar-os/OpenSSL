@@ -34,7 +34,7 @@
             "limit": "审计记录的最大数量",
             "content-dir": "已暂存 GUI 构建的目录",
             "acme-kind": "目标 ACME directory：staging 或 production",
-            "dns-provider": "DNS provider id，项目秘密文件必须携带其 token",
+            "dns-provider": "DNS provider：cloudflare（token 来自 .secrets/open-ssl.json）或 manual（交互式人工放置，无需秘密文件）",
             "identifier": "要签发证书的域名，可重复传入多个",
             "contact": "账户联系人 URI，例如 mailto:ops@example.com，可重复",
             "dns-zone-id": "管理挑战记录的 Cloudflare zone id",
