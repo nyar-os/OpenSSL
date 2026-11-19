@@ -61,18 +61,17 @@ impl CapabilitiesReport {
 
 const SKELETON_REASON: &str = "The skeleton round registers the capability but does not implement it.";
 
-/// Why `acme-issue` stays unavailable in this build.
-const NO_TRANSPORT_REASON: &str = "Issuance has to reach the CA over HTTPS and this build has no HTTPS transport yet.";
-
 /// Domain rows that are available today.
-const AVAILABLE_DOMAIN: &[(&str, &str)] = &[(
-    capability_ids::ACME_PLAN,
-    "Plan a certificate issuance from local project state only. It contacts no CA, writes no DNS record, and writes no key.",
-)];
-
-/// Domain rows that stay unavailable for a concrete, documented reason.
-const BLOCKED_DOMAIN: &[(&str, &str)] =
-    &[(capability_ids::ACME_ISSUE, "Drive the ACME issuance state machine through account, order, DNS challenge, and delivery.")];
+const AVAILABLE_DOMAIN: &[(&str, &str)] = &[
+    (
+        capability_ids::ACME_PLAN,
+        "Plan a certificate issuance from local project state only. It contacts no CA, writes no DNS record, and writes no key.",
+    ),
+    (
+        capability_ids::ACME_ISSUE,
+        "Drive the ACME issuance state machine through account, order, DNS challenge, and delivery over the product-owned HTTPS transport.",
+    ),
+];
 
 const DOMAIN: &[(&str, &str)] = &[
     (capability_ids::CERTIFICATE_INSPECT, "Parse X.509, ASN.1, DER, and PEM input and display a normalized certificate view."),
@@ -100,23 +99,14 @@ pub const fn platform() -> PlatformInfo {
     PlatformInfo { os: std::env::consts::OS, arch: std::env::consts::ARCH }
 }
 
-/// Build the capability report. Only `acme-plan` is available among the domain rows.
+/// Build the capability report. `acme-plan` and `acme-issue` are available among the domain rows.
 pub fn capabilities() -> CapabilitiesReport {
-    let mut items = Vec::with_capacity(META.len() + AVAILABLE_DOMAIN.len() + BLOCKED_DOMAIN.len() + DOMAIN.len());
+    let mut items = Vec::with_capacity(META.len() + AVAILABLE_DOMAIN.len() + DOMAIN.len());
     for (id, detail) in META {
         items.push(CapabilityItem { id, state: None, code: None, reason: "available", detail });
     }
     for (id, detail) in AVAILABLE_DOMAIN {
         items.push(CapabilityItem { id, state: None, code: None, reason: "available", detail });
-    }
-    for (id, detail) in BLOCKED_DOMAIN {
-        items.push(CapabilityItem {
-            id,
-            state: Some(CapabilityState::NotImplemented),
-            code: Some("not_implemented"),
-            reason: NO_TRANSPORT_REASON,
-            detail,
-        });
     }
     for (id, detail) in DOMAIN {
         items.push(CapabilityItem {
@@ -134,8 +124,8 @@ pub fn capabilities() -> CapabilitiesReport {
         version: env!("CARGO_PKG_VERSION"),
         items,
         notes: vec![
-            "`acme-plan` is the only available domain capability. Every other domain capability stays unavailable.",
-            "`acme-issue` stays not_implemented because this build has no HTTPS transport to reach a CA.",
+            "`acme-plan` and `acme-issue` are the available domain capabilities. Every other domain capability stays unavailable.",
+            "`acme-issue` reaches the CA over the product-owned HTTPS transport built on the TLS 1.3 client and pinned ISRG anchors.",
             "Capability, version, audit, and GUI meta capabilities are available.",
             "Remote channels reuse the product-owned TLS stack. No capability may fall back to an external openssl, certutil, certreq, or PowerShell process.",
         ],

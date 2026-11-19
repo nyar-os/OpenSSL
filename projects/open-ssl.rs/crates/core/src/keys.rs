@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! open-ssl/
-//!   accounts/<kind>.key.pem   ACME 账户私钥（PKCS#8）
-//!   orders/<id>.key.pem       该订单的叶子私钥（PKCS#8）
+//!   keys/accounts/<kind>.key.pem   ACME 账户私钥（PKCS#8）
+//!   keys/orders/<id>.key.pem       该订单的叶子私钥（PKCS#8）
 //! ```
 //!
 //! 合同：账户密钥在同一个 directory 上必须复用，否则重启会再建一个账户并丢掉续期身份；
@@ -55,7 +55,7 @@ pub fn order_key(project: &ProjectRoot, order_id: &str) -> Result<SigningKey> {
 }
 
 fn key_path(project: &ProjectRoot, folder: &str, stem: &str) -> PathBuf {
-    project.state_dir().join(folder).join(format!("{stem}{KEY_SUFFIX}"))
+    project.state_dir().join("keys").join(folder).join(format!("{stem}{KEY_SUFFIX}"))
 }
 
 fn load_or_create(file: &Path) -> Result<SigningKey> {
@@ -166,7 +166,7 @@ mod tests {
         // staging 与 production 是两条独立身份。
         let production = account_key(&project, DirectoryKind::Production).expect("production key");
         assert_ne!(first.thumbprint(), production.thumbprint());
-        assert!(root.join(".secrets/open-ssl/accounts/staging.key.pem").exists());
+        assert!(root.join(".secrets/open-ssl/keys/accounts/staging.key.pem").exists());
         let _ = fs::remove_dir_all(root);
     }
 

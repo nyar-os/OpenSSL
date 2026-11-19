@@ -17,18 +17,19 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use boost_net::http::Transport;
+use serde::Serialize;
 
 use crate::{
-    acme::{AccountKey, AcmeClient, AuthorizationStatus},
-    csr::{self},
+    acme::{AcmeClient, AuthorizationStatus},
+    csr,
     delivery::Delivery,
-    dns::{DnsProvider, TxtRecord, challenge_fqdn},
+    dns::{DnsProvider, TxtRecord},
     dns::credentials::ProjectRoot,
     errors::{Error, ErrorCode, Result},
     keys,
     lock::ProjectLock,
-    state::{AccountState, AuthorizationState, DirectoryKind, OrderPhase, OrderState, StateStore, plan_issue},
-    x509::{Certificate, pem_bundle},
+    state::{AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, StateStore, plan_issue},
+    x509::{Certificate, pem_bundle, pem_encode},
 };
 
 /// 一个 CA 的 directory URL。
@@ -62,7 +63,8 @@ pub struct FlowOptions<'a> {
 /// 一次成功签发的报告。
 ///
 /// 只包含公开标识与 generation 身份，不含私钥、token 或 key authorization。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IssueReport {
     /// 账户 URL。
     pub account_url: String,
@@ -95,7 +97,7 @@ fn run<T: Transport, D: DnsProvider>(
     transport: T,
     dns: &mut D,
     store: &StateStore,
-    plan: &crate::state::IssuePlan,
+    plan: &IssuePlan,
     published: &mut Vec<TxtRecord>,
 ) -> Result<IssueReport> {
     let account_key = keys::account_key(project, options.kind)?;
@@ -149,19 +151,8 @@ fn run<T: Transport, D: DnsProvider>(
         None => {
             let order = client.new_order(options.identifiers)?;
             order_state.order_url = Some(order.url.clone());
-            order_state.authorizations = order
-                .authorizations
-                .iter()
-                .map(|url| AuthorizationState {
-                    url: url.clone(),
-                    identifier: String::new(),
-                    wildcard: false,
-                    record_fqdn: String::new(),
-                    txt_digest: String::new(),
-                    status: "pending".to_owned(),
-                    record_id: None,
-                })
-                .collect();
+            // 授权状态在取到 challenge 时才填充：那时才有 identifier 与记录名，
+            // 提前写空占位会让状态校验失败。
             store.save_order(&order_state)?;
             order
         }
@@ -229,8 +220,8 @@ fn run<T: Transport, D: DnsProvider>(
     }
 
     let bundle = crate::delivery::CertificateBundle {
-        certificate_pem: keys::pem_body(&certificates[0]),
-        chain_pem: certificates[1..].iter().map(|der| keys::pem_body(der)).collect(),
+        certificate_pem: pem_encode("CERTIFICATE", &certificates[0]),
+        chain_pem: certificates[1..].iter().map(|der| pem_encode("CERTIFICATE", der)).collect(),
         private_key_pem: keys::private_key_pem(&leaf_key)?,
     };
     let delivery = Delivery::new(project);
@@ -281,7 +272,11 @@ fn cleanup<D: DnsProvider>(dns: &mut D, records: &[TxtRecord]) -> usize {
     removed
 }
 
-fn order_id(kind: DirectoryKind, identifiers: &[String]) -> String {
+/// 同一 directory 与同一组标识的稳定订单 id。
+///
+/// 恢复路径依赖它找到未完成订单；fixture 也用它预先放置叶子私钥。
+#[must_use]
+pub fn order_id(kind: DirectoryKind, identifiers: &[String]) -> String {
     let mut material = format!("{}:", kind.as_str());
     for identifier in identifiers {
         material.push_str(identifier);
