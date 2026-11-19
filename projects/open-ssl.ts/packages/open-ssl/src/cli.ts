@@ -309,6 +309,7 @@ cli.command('acme-issue', 'cli.cmd.acme-issue')
     .option('--dns-zone-name <name>', 'cli.opt.dns-zone-name')
     .option('--project <path>', 'cli.opt.project')
     .option('--dry-run', 'cli.opt.dry-run')
+    .option('--dns-ready', 'cli.opt.dns-ready')
     .actionCtx(async (options, args, ctx) => {
         try {
             bootstrap(options);
@@ -318,6 +319,7 @@ cli.command('acme-issue', 'cli.cmd.acme-issue')
                 dnsZoneId: stringOption(options, 'dns-zone-id'),
                 dnsZoneName: stringOption(options, 'dns-zone-name'),
                 contact: stringArrayOption(options, 'contact'),
+                dnsReady: flag(options, 'dns-ready'),
             });
             emit(options, ctx, outcome, formatIssue(outcome));
             return EXIT.OK;

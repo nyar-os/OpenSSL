@@ -39,7 +39,8 @@
             "contact": "Override the account contacts configured in `open-ssl.json`; repeatable",
             "dns-zone-id": "Override `zone.id` from `open-ssl.json` (Cloudflare zone id)",
             "dns-zone-name": "Override `zone.name` from `open-ssl.json` (Cloudflare zone name)",
-            "project": "Project root owning .secrets/open-ssl.json (defaults to the working directory)"
+            "project": "Project root owning .secrets/open-ssl.json (defaults to the working directory)",
+            "dns-ready": "With `manual`: records are already placed, print the guidance without waiting on stdin"
         }
     }
 }

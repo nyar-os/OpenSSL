@@ -60,6 +60,12 @@ export interface AcmeIssueOptions extends AcmeTargetOptions {
     dnsZoneId?: string;
     dnsZoneName?: string;
     contact?: string[];
+    /**
+     * With `dnsProvider: 'manual'`: the records were already placed (for
+     * example after an earlier run printed the instructions). Print the
+     * guidance without waiting on stdin; the CA validation still decides.
+     */
+    dnsReady?: boolean;
 }
 
 let cached: NativeBindings | null = null;

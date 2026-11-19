@@ -39,7 +39,8 @@
             "contact": "覆盖 `open-ssl.json` 配置的账户联系人，可重复",
             "dns-zone-id": "覆盖 `open-ssl.json` 的 `zone.id`（Cloudflare zone id）",
             "dns-zone-name": "覆盖 `open-ssl.json` 的 `zone.name`（Cloudflare zone 名）",
-            "project": "持有 .secrets/open-ssl.json 的项目根（默认当前工作目录）"
+            "project": "持有 .secrets/open-ssl.json 的项目根（默认当前工作目录）",
+            "dns-ready": "配合 `manual`：记录已放好，只打印指引，不等待 stdin 确认"
         }
     }
 }

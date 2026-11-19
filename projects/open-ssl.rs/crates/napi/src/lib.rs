@@ -412,6 +412,9 @@ pub struct IssueArguments {
     pub dns_zone_name: Option<String>,
     /// Account contacts, for example `mailto:ops@example.com`.
     pub contact: Vec<String>,
+    /// With the interactive `manual` provider: the operator already confirmed
+    /// the records are placed, so print the instructions without waiting on stdin.
+    pub dns_ready: bool,
 }
 
 /// Report returned by `acmeIssue`.
@@ -506,8 +509,9 @@ fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &Resolv
         }
         MANUAL_PROVIDER => {
             // 交互式模式：没有 `.secrets` 也能签发。每条 TXT 打印给操作者人工放置，
-            // 确认后由 CA 的 dns-01 挑战完成真正的校验。
-            let mut dns = Manual::new(StdinPrompter);
+            // 确认后由 CA 的 dns-01 挑战完成真正的校验。`dns_ready` 表示操作者已经
+            // 在另一个进程里看过提示并放好记录，这里只打印指引，不再等待 stdin。
+            let mut dns = Manual::new(OperatorPrompt { waiting: !arguments.dns_ready });
             flow::issue(project, &options, transport, &mut dns)?
         }
         other => {
@@ -521,14 +525,22 @@ fn issue_with(project: &ProjectRoot, arguments: &IssueArguments, target: &Resolv
 
 /// Terminal prompter for the interactive `manual` provider.
 ///
-/// Prints the instruction to stdout and blocks on one stdin line. EOF means the
-/// operator canceled, which fails with `denied` instead of silently continuing.
-struct StdinPrompter;
+/// Prints the instruction to stdout and, unless the operator passed
+/// `dnsReady`, blocks on one stdin line. EOF means the operator canceled,
+/// which fails with `denied` instead of silently continuing.
+struct OperatorPrompt {
+    waiting: bool,
+}
 
-impl Prompter for StdinPrompter {
+impl Prompter for OperatorPrompt {
     fn await_confirmation(&mut self, message: &str) -> open_ssl_core::Result<()> {
         println!("{message}");
         std::io::stdout().flush().map_err(|error| CoreError::new(ErrorCode::Io, format!("无法写入交互提示：{error}")))?;
+        if !self.waiting {
+            println!("（--dns-ready：只打印指引，继续由 CA 校验）");
+            std::io::stdout().flush().map_err(|error| CoreError::new(ErrorCode::Io, format!("无法写入交互提示：{error}")))?;
+            return Ok(());
+        }
         let mut line = String::new();
         let read = std::io::stdin()
             .read_line(&mut line)
@@ -591,7 +603,9 @@ fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreE
     let dns_zone_id = optional_string_prop(object, "dnsZoneId").map_err(napi_error)?;
     let dns_zone_name = optional_string_prop(object, "dnsZoneName").map_err(napi_error)?;
     let contact = optional_string_array(object, "contact")?;
-    Ok(IssueArguments { project_root, kind, dns_provider, identifiers, dns_zone_id, dns_zone_name, contact })
+    let dns_ready_value = object.get_named("dnsReady").map_err(napi_error)?;
+    let dns_ready = if dns_ready_value.is_undefined().map_err(napi_error)? { false } else { dns_ready_value.as_bool().map_err(napi_error)? };
+    Ok(IssueArguments { project_root, kind, dns_provider, identifiers, dns_zone_id, dns_zone_name, contact, dns_ready })
 }
 
 /// `contact` may be omitted; a present value must be an array of strings.

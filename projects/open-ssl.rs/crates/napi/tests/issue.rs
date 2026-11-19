@@ -44,6 +44,7 @@ fn arguments(root: &Path) -> IssueArguments {
         dns_zone_id: None,
         dns_zone_name: None,
         contact: Vec::new(),
+        dns_ready: false,
     }
 }
 
