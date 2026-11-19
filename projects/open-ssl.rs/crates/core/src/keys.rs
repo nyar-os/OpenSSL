@@ -62,7 +62,7 @@ fn load_or_create(file: &Path) -> Result<SigningKey> {
     match fs::read_to_string(file) {
         Ok(text) => parse_pem(file, &text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let key = crate::csr::generate_p256_key();
+            let key = crate::csr::generate_p256_key()?;
             write_private(file, &encode_pem(&key)?)?;
             Ok(key)
         }

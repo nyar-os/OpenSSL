@@ -5,6 +5,8 @@ use core::fmt;
 pub enum TlsError {
     /// Transport failure.
     Io(std::io::Error),
+    /// Host entropy required for the handshake could not be obtained.
+    Entropy(boost_random::SourceError),
     /// The peer closed the TCP connection at a clean record boundary without
     /// `close_notify`. Reads surface this as end of stream.
     Eof,
@@ -22,6 +24,7 @@ impl fmt::Display for TlsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "tls transport error: {error}"),
+            Self::Entropy(error) => write!(formatter, "tls entropy unavailable: {error}"),
             Self::Eof => write!(formatter, "tls connection closed at record boundary"),
             Self::Protocol(detail) => write!(formatter, "tls protocol error: {detail}"),
             Self::Alert(code) => write!(formatter, "tls alert from peer: {code}"),

@@ -88,7 +88,7 @@ pub fn serve_once(listener: &TcpListener, leaf_key: &SigningKey, leaf_der: &[u8]
     }
 
     let mut secret_bytes = [0u8; 32];
-    getrandom::fill(&mut secret_bytes).expect("rng");
+    boost_random::Secure::system().fill(&mut secret_bytes).expect("rng");
     let my_secret = StaticSecret::from(secret_bytes);
     let my_public = XPublicKey::from(&my_secret).to_bytes();
     let shared = my_secret.diffie_hellman(&XPublicKey::from(client_share)).to_bytes();
@@ -100,7 +100,7 @@ pub fn serve_once(listener: &TcpListener, leaf_key: &SigningKey, leaf_der: &[u8]
     sh_exts.extend_from_slice(&ks);
     let mut sh_body = vec![0x03, 0x03];
     let mut random = [0u8; 32];
-    getrandom::fill(&mut random).expect("rng");
+    boost_random::Secure::system().fill(&mut random).expect("rng");
     sh_body.extend_from_slice(&random);
     sh_body.push(32);
     sh_body.extend_from_slice(&hello[4 + 2 + 32 + 1..4 + 2 + 32 + 1 + 32]);

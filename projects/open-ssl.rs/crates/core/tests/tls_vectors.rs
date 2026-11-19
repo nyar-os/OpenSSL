@@ -51,8 +51,8 @@ fn key_schedule_matches_rfc_8448() {
 
 #[test]
 fn client_hello_extensions_frame_exactly() {
-    let share = open_ssl_core::tls::__test_key_share();
-    let hello = open_ssl_core::tls::__test_client_hello("example.com", &share, None);
+    let share = open_ssl_core::tls::__test_key_share().unwrap();
+    let hello = open_ssl_core::tls::__test_client_hello("example.com", &share, None).unwrap();
     assert_eq!(hello[0], 1, "handshake type must be ClientHello");
     let declared = u32::from_be_bytes([0, hello[1], hello[2], hello[3]]) as usize;
     assert_eq!(declared, hello.len() - 4, "message length must match the body");

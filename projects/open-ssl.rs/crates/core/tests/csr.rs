@@ -9,7 +9,7 @@ fn names() -> Vec<String> {
 
 #[test]
 fn created_request_validates_and_carries_the_names() {
-    let key = generate_p256_key();
+    let key = generate_p256_key().unwrap();
     let der = create(&key, "*.wxtoken.work", &names());
     let parsed = parse_and_verify(&der).expect("self-signature verifies");
     assert_eq!(parsed.subject.common_name(), Some("*.wxtoken.work"));
@@ -24,7 +24,7 @@ fn created_request_validates_and_carries_the_names() {
 
 #[test]
 fn tampered_request_is_rejected() {
-    let key = generate_p256_key();
+    let key = generate_p256_key().unwrap();
     let mut der = create(&key, "*.wxtoken.work", &names());
     let last = der.len() - 1;
     der[last] ^= 0x01;
@@ -33,8 +33,8 @@ fn tampered_request_is_rejected() {
 
 #[test]
 fn each_key_signs_only_its_own_request() {
-    let key_a = generate_p256_key();
-    let key_b = generate_p256_key();
+    let key_a = generate_p256_key().unwrap();
+    let key_b = generate_p256_key().unwrap();
     let der_a = create(&key_a, "*.wxtoken.work", &names());
     let der_b = create(&key_b, "*.wxtoken.work", &names());
     assert_ne!(der_a, der_b);
@@ -44,8 +44,8 @@ fn each_key_signs_only_its_own_request() {
 
 #[test]
 fn generated_keys_are_distinct() {
-    let a = generate_p256_key();
-    let b = generate_p256_key();
+    let a = generate_p256_key().unwrap();
+    let b = generate_p256_key().unwrap();
     assert_ne!(a.verifying_key().to_encoded_point(false).as_bytes(), b.verifying_key().to_encoded_point(false).as_bytes());
     let _ = VerifyingKey::from_sec1_bytes(a.verifying_key().to_encoded_point(false).as_bytes()).expect("round trip");
 }

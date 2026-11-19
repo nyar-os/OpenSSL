@@ -13,14 +13,14 @@ use data_binary_asn1::{DerError, DerErrorKind, DerResult, Reader, Tag, Writer, o
 
 /// Generate a fresh P-256 private key from the system CSPRNG.
 ///
-/// `getrandom` supplies the entropy; the scalar is rejected and redrawn when a
-/// draw is not a valid field element, so the output is uniformly valid.
-pub fn generate_p256_key() -> SigningKey {
+/// Invalid scalar draws are retried; host entropy failures are returned.
+pub fn generate_p256_key() -> crate::Result<SigningKey> {
+    let mut entropy = boost_random::Secure::system();
     loop {
         let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).expect("system CSPRNG available");
+        entropy.fill(&mut bytes).map_err(|error| crate::Error::new(crate::ErrorCode::Io, format!("system entropy unavailable: {error}")))?;
         if let Ok(key) = SigningKey::from_slice(&bytes) {
-            return key;
+            return Ok(key);
         }
     }
 }

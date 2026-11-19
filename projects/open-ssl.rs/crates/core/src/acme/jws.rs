@@ -27,8 +27,8 @@ pub struct AccountKey {
 impl AccountKey {
     /// Generate a fresh P-256 account key from the system CSPRNG.
     #[must_use]
-    pub fn generate() -> Self {
-        Self { signing: crate::csr::generate_p256_key() }
+    pub fn generate() -> Result<Self> {
+        Ok(Self { signing: crate::csr::generate_p256_key()? })
     }
 
     /// Adopt an existing P-256 signing key.

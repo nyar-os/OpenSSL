@@ -87,14 +87,14 @@ impl TlsClient {
         stream.set_write_timeout(Some(config.timeout)).map_err(TlsError::Io)?;
         stream.set_nodelay(true).map_err(TlsError::Io)?;
         let mut wire = Wire::new(stream);
-        let keypair = KeyPair::generate();
+        let keypair = KeyPair::generate()?;
         let mut transcript = Vec::new();
         let mut buffer = Vec::new();
 
         let mut cookie: Option<Vec<u8>> = None;
         let mut server_share: Option<[u8; 32]> = None;
         for attempt in 0..2 {
-            let client_hello = build_client_hello(config.hostname, keypair.public(), cookie.as_deref());
+            let client_hello = build_client_hello(config.hostname, keypair.public(), cookie.as_deref())?;
             transcript.extend_from_slice(&client_hello);
             // The initial record carries the legacy 0x0301 version per RFC 8446 §5.1.
             wire.write_record_version(0x16, 0x03, 0x01, &client_hello)?;
@@ -298,8 +298,8 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 #[doc(hidden)]
-pub fn __test_key_share() -> [u8; 32] {
-    *KeyPair::generate().public()
+pub fn __test_key_share() -> TlsResult<[u8; 32]> {
+    Ok(*KeyPair::generate()?.public())
 }
 
 #[doc(hidden)]
@@ -323,7 +323,7 @@ pub fn __test_expand_label(secret: &[u8], label: &str, context: &[u8], length: u
 }
 
 #[doc(hidden)]
-pub fn __test_client_hello(hostname: &str, key_share: &[u8; 32], cookie: Option<&[u8]>) -> Vec<u8> {
+pub fn __test_client_hello(hostname: &str, key_share: &[u8; 32], cookie: Option<&[u8]>) -> TlsResult<Vec<u8>> {
     build_client_hello(hostname, key_share, cookie)
 }
 
@@ -422,11 +422,12 @@ fn extension(out: &mut Vec<u8>, kind: u16, body: &[u8]) {
     out.extend_from_slice(body);
 }
 
-fn build_client_hello(hostname: &str, key_share: &[u8; 32], cookie: Option<&[u8]>) -> Vec<u8> {
+fn build_client_hello(hostname: &str, key_share: &[u8; 32], cookie: Option<&[u8]>) -> TlsResult<Vec<u8>> {
+    let mut entropy = boost_random::Secure::system();
     let mut random = [0u8; 32];
-    getrandom::fill(&mut random).expect("system CSPRNG available");
+    entropy.fill(&mut random).map_err(TlsError::Entropy)?;
     let mut session_id = [0u8; 32];
-    getrandom::fill(&mut session_id).expect("system CSPRNG available");
+    entropy.fill(&mut session_id).map_err(TlsError::Entropy)?;
 
     let mut extensions = Vec::new();
     {
@@ -481,7 +482,7 @@ fn build_client_hello(hostname: &str, key_share: &[u8; 32], cookie: Option<&[u8]
     message.push(1);
     message.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
     message.extend_from_slice(&body);
-    message
+    Ok(message)
 }
 
 /// The key share and HelloRetryRequest cookie extracted from a ServerHello.

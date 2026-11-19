@@ -1,5 +1,6 @@
 //! TLS 1.3 X25519 key exchange and the RFC 8446 §7.1 key schedule.
 
+use super::{TlsError, TlsResult};
 use aes_gcm::{
     Aes128Gcm,
     aead::{Aead, KeyInit, Nonce},
@@ -23,12 +24,12 @@ impl fmt::Debug for KeyPair {
 
 impl KeyPair {
     /// Generate a fresh ephemeral pair from the system CSPRNG.
-    pub fn generate() -> Self {
+    pub fn generate() -> TlsResult<Self> {
         let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).expect("system CSPRNG available");
+        boost_random::Secure::system().fill(&mut bytes).map_err(TlsError::Entropy)?;
         let secret = StaticSecret::from(bytes);
         let public = XPublicKey::from(&secret);
-        Self { secret, public: public.to_bytes() }
+        Ok(Self { secret, public: public.to_bytes() })
     }
 
     /// The public value sent in `key_share`.
@@ -155,8 +156,8 @@ mod tests {
 
     #[test]
     fn x25519_shared_secret_is_symmetric() {
-        let a = KeyPair::generate();
-        let b = KeyPair::generate();
+        let a = KeyPair::generate().unwrap();
+        let b = KeyPair::generate().unwrap();
         assert_eq!(a.shared(b.public()), b.shared(a.public()));
     }
 
