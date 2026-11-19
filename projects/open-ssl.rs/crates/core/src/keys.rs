@@ -93,7 +93,7 @@ fn encode_pem(key: &SigningKey) -> Result<String> {
     let document = key
         .to_pkcs8_der()
         .map_err(|error| Error::new(ErrorCode::Internal, format!("私钥无法编码为 PKCS#8：{error}")))?;
-    Ok(pem_body(&document.as_bytes()))
+    Ok(pem_body(document.as_bytes()))
 }
 
 /// 把 DER 包装成 PEM；每行 64 列，末尾带换行。

@@ -170,13 +170,12 @@ fn run<T: Transport, D: DnsProvider>(
     };
 
     // 授权：发布 DNS、回复挑战、轮询到 valid。
-    for index in 0..order.authorizations.len() {
-        let url = order.authorizations[index].clone();
+    for (index, url) in order.authorizations.iter().enumerate() {
         let already_valid = order_state.authorizations.get(index).is_some_and(|state| state.status == "valid");
         if already_valid {
             continue;
         }
-        let challenge = client.dns_challenge(&url)?;
+        let challenge = client.dns_challenge(url)?;
         let fqdn = challenge.record_fqdn();
         let value = challenge.txt_value();
         let record = dns.put_txt(&fqdn, &value)?;

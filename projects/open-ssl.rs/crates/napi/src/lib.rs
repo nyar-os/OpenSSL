@@ -15,7 +15,7 @@
 use std::{
     cell::RefCell,
     env,
-    io::{BufRead as _, Write as _},
+    io::Write as _,
     path::PathBuf,
     time::Duration,
 };
