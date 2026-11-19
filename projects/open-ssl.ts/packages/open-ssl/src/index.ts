@@ -7,7 +7,38 @@
  * `@wae/commander` assembly over this class, and it owns no protocol logic.
  */
 import { AppError, fromNativeError } from './errors.js';
-import { loadNative } from './native.js';
+import { loadNative, type AcmeIssueOptions, type AcmeTargetOptions } from './native.js';
+
+export type { AcmeIssueOptions, AcmeTargetOptions } from './native.js';
+
+/** Local-only issuance plan returned by `acmePlan` and by a dry run. */
+export interface AcmePlan {
+    projectRoot: string;
+    kind: 'staging' | 'production';
+    dnsProvider: string;
+    identifiers: string[];
+    secretsFile: string;
+    secretsAvailable: boolean;
+    dnsTokenAvailable: boolean;
+    existingAccount: boolean;
+    pendingOrder: string | null;
+    requiredSansNote: string[];
+}
+
+/** Delivered certificate produced by a real issuance run. */
+export interface AcmeIssueReport {
+    accountUrl: string;
+    orderUrl: string;
+    generation: string;
+    dnsRecordsRemoved: number;
+}
+
+/** Outcome of `acmeIssue`: a dry run carries the plan, a real run the report. */
+export interface AcmeIssueOutcome {
+    dryRun: boolean;
+    plan?: AcmePlan;
+    report?: AcmeIssueReport;
+}
 
 /** Capability availability states. `null` means available. */
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
@@ -127,6 +158,28 @@ export class OpenSSL {
         const { actor: _actor, ...defaults } = this.#defaults;
         const params = { ...defaults, ...overrides };
         return this.#invoke(() => loadNative().invoke(capability, params) as T);
+    }
+
+    /**
+     * Read the local-only issuance plan.
+     *
+     * Inspects project state and provider-token availability without creating
+     * an account or order, writing files, touching DNS, or generating keys.
+     */
+    acmePlan(options: AcmeTargetOptions): AcmePlan {
+        return this.#invoke(() => loadNative().acmePlan({ ...options }) as AcmePlan);
+    }
+
+    /**
+     * Drive certificate issuance to a delivered generation, or plan only.
+     *
+     * `dryRun: true` is exactly `acmePlan`. A real run reads the provider token
+     * from the calling project's `.secrets/open-ssl.json`, publishes the DNS
+     * challenges, and returns the delivered report; any failure is a structured
+     * `AppError`, never a silent blocked result.
+     */
+    acmeIssue(options: AcmeIssueOptions): AcmeIssueOutcome {
+        return this.#invoke(() => loadNative().acmeIssue({ ...options }) as AcmeIssueOutcome);
     }
 
     /** Configure the shared audit facility, defaulting to the constructor actor. */

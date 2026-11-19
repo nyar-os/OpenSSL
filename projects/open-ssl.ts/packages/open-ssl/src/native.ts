@@ -35,6 +35,24 @@ export interface NativeBindings {
         capability?: string;
         limit?: number;
     }): string;
+    acmePlan(options: AcmeTargetOptions): unknown;
+    acmeIssue(options: AcmeIssueOptions): unknown;
+}
+
+/** Non-secret issuance target shared by plan and issue. */
+export interface AcmeTargetOptions {
+    kind: 'staging' | 'production';
+    dnsProvider: string;
+    identifiers: string[];
+    projectRoot?: string;
+}
+
+/** Full issuance options; a real run additionally demands exactly one zone form. */
+export interface AcmeIssueOptions extends AcmeTargetOptions {
+    dryRun: boolean;
+    dnsZoneId?: string;
+    dnsZoneName?: string;
+    contact?: string[];
 }
 
 let cached: NativeBindings | null = null;

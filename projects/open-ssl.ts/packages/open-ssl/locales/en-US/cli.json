@@ -16,7 +16,9 @@
             "certificate-store": "Enumerate or manage certificates in the local store",
             "remote-agent": "Manage certificates on a remote computer",
             "host-install": "Install the host integration and desktop entry",
-            "host-uninstall": "Remove the host integration and clean residual state"
+            "host-uninstall": "Remove the host integration and clean residual state",
+            "acme-plan": "Report the local-only issuance plan without touching DNS, keys, or the CA",
+            "acme-issue": "Issue and deliver a certificate over ACME dns-01, or plan only with --dry-run"
         },
         "opt": {
             "actor": "Audit actor id (user or agent name)",
@@ -30,7 +32,14 @@
             "from-ms": "Filter audit records from this Unix timestamp in milliseconds",
             "to-ms": "Filter audit records up to this Unix timestamp in milliseconds",
             "limit": "Maximum number of audit records",
-            "content-dir": "Directory containing the staged GUI build"
+            "content-dir": "Directory containing the staged GUI build",
+            "acme-kind": "ACME directory to target: staging or production",
+            "dns-provider": "DNS provider id whose token the project secrets file must carry",
+            "identifier": "Subject identifier to certify; repeat for several names",
+            "contact": "Account contact URI, for example mailto:ops@example.com; repeatable",
+            "dns-zone-id": "Cloudflare zone id managing the challenge records",
+            "dns-zone-name": "Cloudflare zone name managing the challenge records",
+            "project": "Project root owning .secrets/open-ssl.json (defaults to the working directory)"
         }
     }
 }

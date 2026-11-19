@@ -22,6 +22,9 @@ import {
     AppError,
     OpenSSL,
     fromNativeError,
+    type AcmeIssueOutcome,
+    type AcmePlan,
+    type AcmeTargetOptions,
     type CapabilityItem,
 } from './index.js';
 import { loadRuntimeContract, type ActorChannel } from './runtime.js';
@@ -50,6 +53,14 @@ function stringOption(options: ParsedOptions, key: string): string | undefined {
 
 function flag(options: ParsedOptions, key: string): boolean {
     return options[key] === true;
+}
+
+function stringArrayOption(options: ParsedOptions, key: string): string[] {
+    const value = options[key];
+    if (value === undefined) return [];
+    if (Array.isArray(value)) return value.map((item) => String(item));
+    if (typeof value === 'string') return [value];
+    throw new AppError({ code: 'invalid_argument', message: `\`--${key}\` accepts values only` });
 }
 
 function integerOption(options: ParsedOptions, key: string): number | undefined {
@@ -210,6 +221,92 @@ cli.command('gui', 'cli.cmd.gui')
             bootstrap(options);
             const backend = await ssl.runGui({ contentDir: stringOption(options, 'content-dir') });
             emit(options, ctx, { backend }, `closed (${backend})`);
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+/** Shared target parsing for `acme-plan` and `acme-issue`. */
+function acmeTarget(options: ParsedOptions): AcmeTargetOptions {
+    const kind = stringOption(options, 'kind');
+    if (kind !== 'staging' && kind !== 'production') {
+        throw new AppError({ code: 'invalid_argument', message: '`--kind` must be `staging` or `production`' });
+    }
+    const dnsProvider = stringOption(options, 'dns-provider');
+    if (!dnsProvider) {
+        throw new AppError({ code: 'invalid_argument', message: '`--dns-provider` is required' });
+    }
+    const identifiers = stringArrayOption(options, 'identifier');
+    if (!identifiers.length) {
+        throw new AppError({ code: 'invalid_argument', message: 'at least one `--identifier` is required' });
+    }
+    const projectRoot = stringOption(options, 'project');
+    return projectRoot ? { kind, dnsProvider, identifiers, projectRoot } : { kind, dnsProvider, identifiers };
+}
+
+function formatPlan(plan: AcmePlan): string {
+    const lines = [
+        `${plan.identifiers.join(', ')} via ${plan.dnsProvider} against the ${plan.kind} directory`,
+        `secrets file: ${plan.secretsFile} (${plan.secretsAvailable ? 'valid' : 'missing or invalid'})`,
+        `dns token: ${plan.dnsTokenAvailable ? 'available' : 'missing'}`,
+        `account: ${plan.existingAccount ? 'reusable' : 'will be created'}`,
+    ];
+    if (plan.pendingOrder) lines.push(`pending order: ${plan.pendingOrder}`);
+    lines.push(...plan.requiredSansNote.map((note) => `note: ${note}`));
+    return lines.join('\n');
+}
+
+function formatIssue(outcome: AcmeIssueOutcome): string {
+    if (outcome.dryRun) return `dry run\n${outcome.plan ? formatPlan(outcome.plan) : ''}`;
+    const report = outcome.report;
+    if (!report) return 'no outcome';
+    return [
+        `delivered generation ${report.generation}`,
+        `account: ${report.accountUrl}`,
+        `order: ${report.orderUrl}`,
+        `dns records removed: ${report.dnsRecordsRemoved}`,
+    ].join('\n');
+}
+
+cli.command('acme-plan', 'cli.cmd.acme-plan')
+    .option('--kind <kind>', 'cli.opt.acme-kind')
+    .option('--dns-provider <id>', 'cli.opt.dns-provider')
+    .option('--identifier <domain>...', 'cli.opt.identifier')
+    .option('--project <path>', 'cli.opt.project')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options);
+            const plan = ssl.acmePlan(acmeTarget(options));
+            emit(options, ctx, plan, formatPlan(plan));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+cli.command('acme-issue', 'cli.cmd.acme-issue')
+    .option('--kind <kind>', 'cli.opt.acme-kind')
+    .option('--dns-provider <id>', 'cli.opt.dns-provider')
+    .option('--identifier <domain>...', 'cli.opt.identifier')
+    .option('--contact <uri>...', 'cli.opt.contact')
+    .option('--dns-zone-id <id>', 'cli.opt.dns-zone-id')
+    .option('--dns-zone-name <name>', 'cli.opt.dns-zone-name')
+    .option('--project <path>', 'cli.opt.project')
+    .option('--dry-run', 'cli.opt.dry-run')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options);
+            const outcome = ssl.acmeIssue({
+                ...acmeTarget(options),
+                dryRun: flag(options, 'dry-run'),
+                dnsZoneId: stringOption(options, 'dns-zone-id'),
+                dnsZoneName: stringOption(options, 'dns-zone-name'),
+                contact: stringArrayOption(options, 'contact'),
+            });
+            emit(options, ctx, outcome, formatIssue(outcome));
             return EXIT.OK;
         }
         catch (error) {

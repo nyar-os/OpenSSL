@@ -16,7 +16,9 @@
             "certificate-store": "枚举或管理本地证书存储",
             "remote-agent": "纳管远程计算机上的证书",
             "host-install": "安装宿主集成与桌面入口",
-            "host-uninstall": "移除宿主集成并清理残留状态"
+            "host-uninstall": "移除宿主集成并清理残留状态",
+            "acme-plan": "只读本地签发计划，不触碰 DNS、密钥与 CA",
+            "acme-issue": "经 ACME dns-01 真实签发并交付证书，--dry-run 时只做计划"
         },
         "opt": {
             "actor": "审计调用者 id（用户或 agent 名称）",
@@ -30,7 +32,14 @@
             "from-ms": "按 Unix 毫秒时间戳过滤审计记录的起点",
             "to-ms": "按 Unix 毫秒时间戳过滤审计记录的终点",
             "limit": "审计记录的最大数量",
-            "content-dir": "已暂存 GUI 构建的目录"
+            "content-dir": "已暂存 GUI 构建的目录",
+            "acme-kind": "目标 ACME directory：staging 或 production",
+            "dns-provider": "DNS provider id，项目秘密文件必须携带其 token",
+            "identifier": "要签发证书的域名，可重复传入多个",
+            "contact": "账户联系人 URI，例如 mailto:ops@example.com，可重复",
+            "dns-zone-id": "管理挑战记录的 Cloudflare zone id",
+            "dns-zone-name": "管理挑战记录的 Cloudflare zone name",
+            "project": "持有 .secrets/open-ssl.json 的项目根（默认当前工作目录）"
         }
     }
 }
