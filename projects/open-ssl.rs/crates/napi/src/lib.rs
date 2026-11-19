@@ -6,21 +6,26 @@
 //! capability boundary through the shared `wae.audit/v0` facility.
 //!
 //! The skeleton round registers the full capability table. `acme-plan` is the
-//! only implemented domain capability and stays local-only, while `acme-issue`
-//! reports the missing HTTPS transport instead of fabricating an issuance. Every
-//! other domain command resolves to `not_implemented` with a stable code.
+//! local-only planning capability, while `acme-issue` drives the real issuance
+//! state machine over the product-owned HTTPS transport. Every other domain
+//! command resolves to `not_implemented` with a stable code.
 
 #![deny(missing_docs)]
 
-use std::{cell::RefCell, env, path::PathBuf};
+use std::{cell::RefCell, env, path::PathBuf, time::Duration};
 
+use boost_net::http::Url;
 use open_ssl_core::{
     CapabilityState, Error as CoreError, ErrorCode,
     audit::capability_ids,
-    dns::credentials::ProjectRoot,
-    issue::{IssueRequest, IssueSession, begin_issue},
+    dns::{
+        cloudflare::{Cloudflare, DEFAULT_API_BASE, PROVIDER_ID as CLOUDFLARE_PROVIDER, Zone},
+        credentials::{ProjectRoot, ProjectSecrets},
+    },
+    flow::{self, FlowOptions},
     platform::{CapabilityItem, capabilities as core_capabilities, platform as core_platform},
     state::{DirectoryKind, IssuePlan, plan_issue},
+    tls::HttpsTransport,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -388,12 +393,18 @@ pub struct IssueArguments {
     pub dns_provider: String,
     /// Identifiers requested from the CA.
     pub identifiers: Vec<String>,
+    /// Cloudflare zone id, when the caller manages the zone by id.
+    pub dns_zone_id: Option<String>,
+    /// Cloudflare zone name, when the caller manages the zone by name.
+    pub dns_zone_name: Option<String>,
+    /// Account contacts, for example `mailto:ops@example.com`.
+    pub contact: Vec<String>,
 }
 
 /// Report returned by `acmeIssue`.
 ///
-/// A dry run carries the plan and a real run carries the session. `blocked` inside
-/// the session is what tells the caller this build cannot reach a CA yet.
+/// A dry run carries the plan and a real run carries the issuance report with the
+/// delivered generation. Failure is a structured error, never a silent `blocked`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueOutcome {
@@ -402,9 +413,9 @@ pub struct IssueOutcome {
     /// Plan produced by a dry run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<IssuePlan>,
-    /// Session produced by a non-dry run.
+    /// Report produced by a real run.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<IssueSession>,
+    pub report: Option<flow::IssueReport>,
 }
 
 /// Run the local-only plan behind `acmePlan`.
@@ -419,18 +430,54 @@ pub fn run_acme_plan(arguments: &IssueArguments) -> open_ssl_core::Result<IssueP
 /// Run `acmeIssue`.
 ///
 /// A dry run is exactly [`run_acme_plan`]: no lock, no state, no DNS, no key. A
-/// real run takes the project lock through `begin_issue` and releases it before
-/// the report leaves the boundary, because the author surface keeps no handle.
+/// real drive runs the full issuance state machine over the product-owned HTTPS
+/// transport and the configured DNS provider. The project lock covers the whole
+/// flow, and any failure leaves a structured error with a non-zero exit code at
+/// the CLI boundary instead of a silent `blocked` result.
 pub fn run_acme_issue(arguments: &IssueArguments, dry_run: bool) -> open_ssl_core::Result<IssueOutcome> {
     if dry_run {
         let plan = run_acme_plan(arguments)?;
-        return Ok(IssueOutcome { dry_run: true, plan: Some(plan), session: None });
+        return Ok(IssueOutcome { dry_run: true, plan: Some(plan), report: None });
     }
     let project = resolve_project(arguments)?;
-    let request = IssueRequest { kind: arguments.kind, dns_provider: &arguments.dns_provider, identifiers: &arguments.identifiers };
-    let (lock, session) = begin_issue(&project, request)?;
-    drop(lock);
-    Ok(IssueOutcome { dry_run: false, plan: None, session: Some(session) })
+    let secrets = ProjectSecrets::load(&project)?;
+    let token = secrets.dns_token(&arguments.dns_provider)?;
+    let options = FlowOptions {
+        kind: arguments.kind,
+        directory_url: flow::directory_url(arguments.kind),
+        dns_provider: &arguments.dns_provider,
+        identifiers: &arguments.identifiers,
+        contact: &arguments.contact,
+        poll_attempts: 40,
+        poll_delay: Duration::from_secs(3),
+    };
+    let transport = HttpsTransport::new();
+    let report = match arguments.dns_provider.as_str() {
+        CLOUDFLARE_PROVIDER => {
+            let zone = resolve_zone(arguments)?;
+            let api_base = Url::parse(DEFAULT_API_BASE)
+                .map_err(|error| CoreError::new(ErrorCode::Internal, format!("Cloudflare API base is invalid: {error}")))?;
+            let mut dns = Cloudflare::with_zone(transport.clone(), api_base, token, zone);
+            flow::issue(&project, &options, transport, &mut dns)?
+        }
+        other => {
+            return Err(invalid_argument(format!(
+                "`acme-issue` can drive the `{CLOUDFLARE_PROVIDER}` provider only, not `{other}`"
+            )));
+        }
+    };
+    Ok(IssueOutcome { dry_run: false, plan: None, report: Some(report) })
+}
+
+/// The zone must be configured explicitly; the adapter never guesses it from
+/// the challenge name. Exactly one of id and name may be present.
+fn resolve_zone(arguments: &IssueArguments) -> open_ssl_core::Result<Zone> {
+    match (arguments.dns_zone_id.as_deref(), arguments.dns_zone_name.as_deref()) {
+        (Some(id), None) => Zone::id(id),
+        (None, Some(name)) => Zone::name(name),
+        (Some(_), Some(_)) => Err(invalid_argument("`dnsZoneId` and `dnsZoneName` are mutually exclusive")),
+        (None, None) => Err(invalid_argument("`acme-issue` requires `dnsZoneId` or `dnsZoneName` for the cloudflare provider")),
+    }
 }
 
 fn resolve_project(arguments: &IssueArguments) -> open_ssl_core::Result<ProjectRoot> {
@@ -461,7 +508,19 @@ fn issue_arguments(object: JsValue) -> std::result::Result<IssueArguments, CoreE
     let kind = directory_kind(&required_string(object, "kind")?)?;
     let dns_provider = required_string(object, "dnsProvider")?;
     let identifiers = string_array(object, "identifiers")?;
-    Ok(IssueArguments { project_root, kind, dns_provider, identifiers })
+    let dns_zone_id = optional_string_prop(object, "dnsZoneId").map_err(napi_error)?;
+    let dns_zone_name = optional_string_prop(object, "dnsZoneName").map_err(napi_error)?;
+    let contact = optional_string_array(object, "contact")?;
+    Ok(IssueArguments { project_root, kind, dns_provider, identifiers, dns_zone_id, dns_zone_name, contact })
+}
+
+/// `contact` may be omitted; a present value must be an array of strings.
+fn optional_string_array(object: JsValue, name: &str) -> std::result::Result<Vec<String>, CoreError> {
+    let value = object.get_named(name).map_err(napi_error)?;
+    if value.is_undefined().map_err(napi_error)? {
+        return Ok(Vec::new());
+    }
+    string_array(object, name)
 }
 
 /// `projectRoot` may be omitted, but a present value must be a usable string:
@@ -534,7 +593,16 @@ fn issue_params(arguments: &IssueArguments, dry_run: Option<bool>) -> Value {
         "kind": arguments.kind.as_str(),
         "dnsProvider": &arguments.dns_provider,
         "identifiers": &arguments.identifiers,
+        "contact": &arguments.contact,
     });
+    if let Some(object) = params.as_object_mut() {
+        if let Some(id) = &arguments.dns_zone_id {
+            object.insert("dnsZoneId".to_owned(), Value::String(id.clone()));
+        }
+        if let Some(name) = &arguments.dns_zone_name {
+            object.insert("dnsZoneName".to_owned(), Value::String(name.clone()));
+        }
+    }
     if let (Some(dry_run), Some(object)) = (dry_run, params.as_object_mut()) {
         object.insert("dryRun".to_owned(), Value::Bool(dry_run));
     }
@@ -548,11 +616,8 @@ fn plan_summary(arguments: &IssueArguments) -> String {
 
 fn issue_summary(arguments: &IssueArguments, outcome: &IssueOutcome) -> String {
     let base = plan_summary(arguments);
-    match &outcome.session {
-        Some(session) => match session.blocked {
-            Some(reason) => format!("{base}: stage {}, blocked because {reason}", session.stage.as_str()),
-            None => format!("{base}: stage {}", session.stage.as_str()),
-        },
+    match &outcome.report {
+        Some(report) => format!("{base}: delivered generation {}", report.generation),
         None => format!("{base}: dry run"),
     }
 }

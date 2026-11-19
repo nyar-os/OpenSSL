@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use open_ssl_core::{issue::NO_HTTPS_TRANSPORT, state::DirectoryKind};
+use open_ssl_core::{ErrorCode, state::DirectoryKind};
 use open_ssl_napi::{IssueArguments, run_acme_issue, run_acme_plan};
 
 /// A token that must never appear in any report.
@@ -41,6 +41,9 @@ fn arguments(root: &Path) -> IssueArguments {
         kind: DirectoryKind::Staging,
         dns_provider: "cloudflare".to_owned(),
         identifiers: vec!["example.test".to_owned(), "*.example.test".to_owned()],
+        dns_zone_id: None,
+        dns_zone_name: None,
+        contact: Vec::new(),
     }
 }
 
@@ -64,7 +67,7 @@ fn a_dry_run_takes_no_lock_and_writes_nothing() {
     let outcome = run_acme_issue(&arguments(&root), true).expect("dry run");
 
     assert!(outcome.dry_run);
-    assert!(outcome.session.is_none(), "dry-run 不产生会话");
+    assert!(outcome.report.is_none(), "dry-run 不产生签发报告");
     let plan = outcome.plan.expect("dry-run 携带计划");
     assert!(plan.dns_token_available);
     assert!(!state_dir(&root).join("issue.lock").exists(), "dry-run 不得创建锁文件");
@@ -74,20 +77,46 @@ fn a_dry_run_takes_no_lock_and_writes_nothing() {
 }
 
 #[test]
-fn a_real_run_reports_the_blocked_transport_and_never_claims_issuance() {
-    let root = temp_project("blocked");
-    let outcome = run_acme_issue(&arguments(&root), false).expect("session");
+fn a_real_run_refuses_without_an_explicit_zone() {
+    // 没有 zone 时必须在任何网络与 DNS 动作之前失败，并且不留下半成品。
+    let root = temp_project("no-zone");
+    let error = run_acme_issue(&arguments(&root), false).expect_err("a real run must demand the zone");
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert!(error.message().contains("dnsZoneId") || error.message().contains("dnsZoneName"), "{}", error.message());
+    assert!(!state_dir(&root).exists(), "被拒绝的签发不得创建状态目录");
+    cleanup(&root);
+}
 
-    assert!(!outcome.dry_run);
-    let session = outcome.session.as_ref().expect("real run 携带会话");
-    assert_eq!(session.blocked, Some(NO_HTTPS_TRANSPORT), "必须暴露未接通 HTTPS 的事实");
-    assert_ne!(session.stage.as_str(), "issued", "阶段不得伪装成已签发");
-    assert!(!state_dir(&root).join("issue.lock").exists(), "报告离开边界前必须释放锁");
+#[test]
+fn a_real_run_refuses_both_zone_forms_at_once() {
+    let root = temp_project("both-zones");
+    let mut arguments = arguments(&root);
+    arguments.dns_zone_id = Some("zone-id".to_owned());
+    arguments.dns_zone_name = Some("example.test".to_owned());
+    let error = run_acme_issue(&arguments, false).expect_err("两种 zone 形态互斥");
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    cleanup(&root);
+}
 
-    let report = serde_json::to_string(&outcome).expect("outcome serializes");
-    assert!(!report.contains(TOKEN), "会话不得回显 token：{report}");
-    assert!(report.contains("blocked"), "会话必须携带 blocked 字段：{report}");
-    assert!(!report.contains("issued"), "不得出现已签发的假象：{report}");
+#[test]
+fn a_real_run_refuses_an_unsupported_provider() {
+    let root = temp_project("other-provider");
+    let mut arguments = arguments(&root);
+    arguments.dns_provider = "manual".to_owned();
+    arguments.dns_zone_name = Some("example.test".to_owned());
+    let error = run_acme_issue(&arguments, false).expect_err("manual 不能作为真实签发的 provider");
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    cleanup(&root);
+}
 
+#[test]
+fn a_refused_run_never_echoes_the_token() {
+    // 不触网的拒绝路径：provider 在秘密文件里没有 token。
+    let root = temp_project("token-leak");
+    let mut arguments = arguments(&root);
+    arguments.dns_provider = "route53".to_owned();
+    arguments.dns_zone_name = Some("example.test".to_owned());
+    let error = run_acme_issue(&arguments, false).expect_err("route53 没有配置秘密");
+    assert!(!error.to_string().contains(TOKEN), "拒绝消息不得回显 token：{error}");
     cleanup(&root);
 }

@@ -858,6 +858,7 @@ dependencies = [
 name = "open-ssl-napi"
 version = "0.0.0"
 dependencies = [
+ "boost-net",
  "open-ssl-core",
  "serde",
  "serde_json",
