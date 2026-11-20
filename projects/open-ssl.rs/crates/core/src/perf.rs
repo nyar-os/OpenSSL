@@ -15,7 +15,7 @@
 
 use std::{sync::LazyLock, time::Instant};
 
-use boost_harness::hotspot::Hotspot;
+use boost_harness::hotspot::{Hotspot, HotspotSnapshot};
 
 /// 进程级记录器，常开。
 pub static SPOTS: LazyLock<Hotspot> = LazyLock::new(Hotspot::new);
@@ -43,8 +43,15 @@ pub fn maybe_report_stderr() {
         return;
     }
     use std::io::Write;
-    let snapshot = SPOTS.snapshot();
-    let mut out: Vec<u8> = Vec::new();
+    let _ = std::io::stderr().write_all(render_report(&SPOTS.snapshot()).as_bytes());
+}
+
+/// 把快照渲染成工程师调优表：行按总耗时降序，卡点事件附后。
+///
+/// 这是 `OPEN_SSL_PERF=1` 时 stderr 上看到的形状，单独成函数以便测试锁定。
+pub fn render_report(snapshot: &HotspotSnapshot) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
     let _ = writeln!(out, "open-ssl runtime profile (uptime {} ms)", snapshot.uptime_ms);
     let _ = writeln!(out, "{:<22}{:>7}{:>10}{:>9}{:>9}{:>9}", "key", "hits", "totalMs", "avgMs", "p95Ms", "maxMs");
     for row in &snapshot.rows {
@@ -59,7 +66,7 @@ pub fn maybe_report_stderr() {
     if snapshot.dropped_stalls > 0 {
         let _ = writeln!(out, "  (dropped {} older stall events)", snapshot.dropped_stalls);
     }
-    let _ = std::io::stderr().write_all(&out);
+    out
 }
 
 fn ms(ns: u64) -> f64 {
@@ -81,5 +88,19 @@ mod tests {
         assert_eq!(row.hits, 2);
         assert!(row.total_ns >= 2_000_000, "一次真实 sleep 加一次近零记录: {row:?}");
         assert!(snapshot.stalls.iter().any(|event| event.cause == "badNonce"));
+    }
+
+    #[test]
+    fn the_rendered_table_is_the_engineer_surface() {
+        let hotspot = Hotspot::new();
+        hotspot.record("acme.http.post", Duration::from_millis(120));
+        hotspot.record("acme.jws.sign", Duration::from_millis(2));
+        hotspot.stall_after("acme.order.poll", "poll-timeout", "12 次轮询仍未终态", Duration::from_secs(30));
+        let table = render_report(&hotspot.snapshot());
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].starts_with("open-ssl runtime profile"), "{lines:?}");
+        assert!(lines[1].contains("totalMs") && lines[1].contains("p95Ms"), "表头行: {lines:?}");
+        assert!(lines[2].starts_with("acme.http.post"), "总耗时最高的键排第一: {table}");
+        assert!(table.contains("poll-timeout") && table.contains("acme.order.poll"), "卡点行: {table}");
     }
 }
