@@ -1,19 +1,14 @@
-//! RFC 8555 ACME automation: directory, nonces, JWS, accounts, orders, and issuance.
+//! RFC 8555 ACME automation lives in the family crate `boost.net`.
 //!
-//! The product owns the protocol automation; every HTTP request travels through
-//! the family transport `boost.net::http`. [`client::AcmeClient`] is generic over
-//! [`boost_net::http::Transport`] so conformance runs against loopback fixtures
-//! without real network access.
+//! The protocol — directory documents, nonces, ES256 JWS, order and challenge
+//! resources, `dns-01` TXT material, and `Retry-After`-aware polling — is owned
+//! by [`boost_net::acme`] and shared with the other OpenX TLS products. This
+//! product keeps account and leaf key persistence, DNS provider adapters,
+//! certificate delivery, renewal state, and every interactive decision.
 
-pub mod client;
-pub mod directory;
-pub mod jws;
-pub mod types;
+pub use boost_net::acme::*;
 
-pub use client::{AcmeClient, DnsChallenge, OrderPollVerdict, order_poll_verdict, retry_after_delay, txt_digest};
-pub use directory::Directory;
-pub use jws::{AccountKey, AccountRef, b64url, build_jws, jwk_thumbprint};
-pub use types::{
-    Account, AccountStatus, Authorization, AuthorizationStatus, Challenge, ChallengeStatus, ChallengeType, Identifier, Order, OrderStatus,
-    Problem,
-};
+/// Path kept for callers and tests that import `acme::types::*`.
+pub mod types {
+    pub use boost_net::acme::types::*;
+}

@@ -15,7 +15,10 @@ It contains no process spawning. The only platform `cfg` branches set the Unix
 permission bits of delivered private keys. Filesystem access is limited to the
 project-scoped secrets loader in `dns::credentials` and the generation delivery in
 `delivery`; every network request travels through the family transport, and protocol
-handling lives in the `acme`, `dns`, `der`, `tls`, and `x509` modules.
+handling lives in the `dns`, `der`, `tls`, and `x509` modules. The `acme` module is a thin
+re-export of the family crate `boost_net::acme`, which owns RFC 8555 documents, ES256 JWS,
+nonces, challenge material, and polling; this product keeps account and leaf key storage,
+provider credentials, delivery, renewal state, and the interactive flow.
 
 The skeleton round registers every domain capability as `not_implemented` with a
 stable code so no caller can mistake an unimplemented path for a successful one.

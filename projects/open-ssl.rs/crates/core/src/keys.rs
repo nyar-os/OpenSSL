@@ -45,7 +45,8 @@ const PEM_FOOTER: &str = "-----END PRIVATE KEY-----";
 /// 读取或创建该 directory 的 ACME 账户密钥。
 pub fn account_key(project: &ProjectRoot, kind: DirectoryKind) -> Result<AccountKey> {
     let file = key_path(project, ACCOUNTS_DIR, kind.as_str());
-    Ok(AccountKey::from_signing_key(load_or_create(&file)?))
+    let signing = load_or_create(&file)?;
+    Ok(AccountKey::from_bytes(&signing.to_bytes()[..])?)
 }
 
 /// 读取或创建该订单的叶子私钥。

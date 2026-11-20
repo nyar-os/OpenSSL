@@ -26,6 +26,14 @@ use open_ssl_core::{
     dns::challenge_fqdn,
 };
 
+fn account_key(signing: &SigningKey) -> AccountKey {
+    AccountKey::from_bytes(&signing.to_bytes()[..]).expect("account key")
+}
+
+fn error_code(error: &boost_net::acme::AcmeError) -> ErrorCode {
+    open_ssl_core::Error::from(error.clone()).code()
+}
+
 const CHAIN_PEM: &str = concat!(
     "-----BEGIN CERTIFICATE-----\n",
     "Zm9yLXRlc3Rpbmctb25seS1sZWFmLWNlcnRpZmljYXRl\n",
@@ -65,7 +73,7 @@ fn verify_jws(request: &mock::RecordedRequest, verifying: &p256::ecdsa::Verifyin
 fn full_dns01_flow_against_a_loopback_acme_server() {
     let signing = SigningKey::from_slice(&[7u8; 32]).expect("test key");
     let verifying = *signing.verifying_key();
-    let key = AccountKey::from_signing_key(signing.clone());
+    let key = account_key(&signing);
     let thumbprint = key.thumbprint();
     let order_polls = Arc::new(AtomicUsize::new(0));
     let script = {
@@ -246,7 +254,7 @@ fn full_dns01_flow_against_a_loopback_acme_server() {
 
 #[test]
 fn bad_nonce_is_retried_once_with_the_refreshed_nonce() {
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[9u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[9u8; 32]).expect("test key"));
     let attempts = Arc::new(AtomicUsize::new(0));
     let script = {
         let attempts = Arc::clone(&attempts);
@@ -292,7 +300,7 @@ fn bad_nonce_is_retried_once_with_the_refreshed_nonce() {
 
 #[test]
 fn a_second_bad_nonce_stops_after_exactly_one_retry() {
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[11u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[11u8; 32]).expect("test key"));
     let script = Arc::new(move |request: &mock::RecordedRequest, _index: usize, base: &str| -> mock::MockResponse {
         let route = request.route().to_owned();
         match (request.method.as_str(), route.as_str()) {
@@ -317,7 +325,7 @@ fn a_second_bad_nonce_stops_after_exactly_one_retry() {
     let server = mock::MockServer::start(script);
     let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
     let error = client.new_account(&[], true).expect_err("a persistent badNonce must fail");
-    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert_eq!(error_code(&error), ErrorCode::Protocol);
     assert!(error.message().contains("stale nonce"), "the problem detail must surface: {error}");
     let posts = server.requests().into_iter().filter(|request| request.method == "POST").count();
     assert_eq!(posts, 2, "exactly one retry after the first 409");
@@ -325,7 +333,7 @@ fn a_second_bad_nonce_stops_after_exactly_one_retry() {
 
 #[test]
 fn bad_nonce_is_recognized_by_the_problem_type_not_the_status() {
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[13u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[13u8; 32]).expect("test key"));
     let attempts = Arc::new(AtomicUsize::new(0));
     let script = {
         let attempts = Arc::clone(&attempts);
@@ -367,7 +375,7 @@ fn bad_nonce_is_recognized_by_the_problem_type_not_the_status() {
 
 #[test]
 fn a_conflict_without_a_bad_nonce_problem_is_not_retried() {
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[17u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[17u8; 32]).expect("test key"));
     let script = Arc::new(move |request: &mock::RecordedRequest, _index: usize, base: &str| -> mock::MockResponse {
         let route = request.route().to_owned();
         match (request.method.as_str(), route.as_str()) {
@@ -391,7 +399,7 @@ fn a_conflict_without_a_bad_nonce_problem_is_not_retried() {
     let server = mock::MockServer::start(script);
     let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
     let error = client.new_account(&[], true).expect_err("only badNonce is retried");
-    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert_eq!(error_code(&error), ErrorCode::Protocol);
     assert!(error.message().contains("account already exists"), "the problem detail must surface: {error}");
     let posts = server.requests().into_iter().filter(|request| request.method == "POST").count();
     assert_eq!(posts, 1, "a non-badNonce conflict must not be retried");
@@ -536,11 +544,11 @@ fn poll_order_reports_a_timeout_instead_of_returning_pending() {
         })
         .to_string()
     });
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[19u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[19u8; 32]).expect("test key"));
     let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
     client.new_account(&[], true).expect("account");
     let error = client.poll_order(&server.url("/order/1"), 2, Duration::from_millis(1)).expect_err("an unfinished order is not success");
-    assert_eq!(error.code(), ErrorCode::Network);
+    assert_eq!(error_code(&error), ErrorCode::Network);
     assert!(error.message().contains("processing"), "the last status must be named: {error}");
 }
 
@@ -555,11 +563,11 @@ fn poll_order_fails_fast_on_a_terminal_invalid_order() {
         })
         .to_string()
     });
-    let key = AccountKey::from_signing_key(SigningKey::from_slice(&[23u8; 32]).expect("test key"));
+    let key = account_key(&SigningKey::from_slice(&[23u8; 32]).expect("test key"));
     let mut client = AcmeClient::bootstrap(HttpTransport::new(), key, &server.url("/directory")).expect("bootstrap");
     client.new_account(&[], true).expect("account");
     let error = client.poll_order(&server.url("/order/1"), 4, Duration::from_millis(1)).expect_err("an invalid order is a failure");
-    assert_eq!(error.code(), ErrorCode::Protocol);
+    assert_eq!(error_code(&error), ErrorCode::Protocol);
     assert!(error.message().contains("dns validation failed"), "the problem detail must surface: {error}");
     let polls = server.requests().into_iter().filter(|request| request.route() == "/order/1").count();
     assert_eq!(polls, 1, "an invalid order stops immediately");
@@ -582,7 +590,7 @@ fn thumbprint_matches_the_rfc_7638_example_vector() {
 #[test]
 fn ec_canonical_jwk_and_thumbprint_recompute_independently() {
     let signing = SigningKey::from_slice(&[5u8; 32]).expect("test key");
-    let key = AccountKey::from_signing_key(signing.clone());
+    let key = account_key(&signing);
     let point = signing.verifying_key().to_encoded_point(false);
     let expected = format!(
         "{{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"{}\",\"y\":\"{}\"}}",
@@ -597,7 +605,7 @@ fn ec_canonical_jwk_and_thumbprint_recompute_independently() {
 #[test]
 fn es256_jws_matches_the_known_answer_vector() {
     let signing = SigningKey::from_slice(&[3u8; 32]).expect("test key");
-    let key = AccountKey::from_signing_key(signing.clone());
+    let key = account_key(&signing);
     let jws = build_jws(&key, &AccountRef::Jwk, "https://acme.example.test/new-order", "c2hpcmE1LW5vbmNl", r#"{"identifiers":[]}"#)
         .expect("build JWS");
     assert_eq!(jws, KNOWN_ANSWER_JWS);

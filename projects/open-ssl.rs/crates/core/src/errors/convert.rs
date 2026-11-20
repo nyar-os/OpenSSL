@@ -17,3 +17,16 @@ impl From<boost_net::NetError> for Error {
         Self::new(ErrorCode::Network, value.to_string())
     }
 }
+
+impl From<boost_net::acme::AcmeError> for Error {
+    fn from(value: boost_net::acme::AcmeError) -> Self {
+        use boost_net::acme::AcmeError;
+        let code = match value {
+            AcmeError::Protocol(_) => ErrorCode::Protocol,
+            AcmeError::Network(_) => ErrorCode::Network,
+            AcmeError::Denied(_) => ErrorCode::Denied,
+            AcmeError::InvalidArgument(_) => ErrorCode::InvalidArgument,
+        };
+        Self::new(code, value.message().to_owned())
+    }
+}
