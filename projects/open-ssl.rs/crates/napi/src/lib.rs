@@ -704,8 +704,11 @@ fn acme_plan(ctx: CallContext) -> Result<JsValue> {
     let plan = audit::run(capability_ids::ACME_PLAN, Mode::DryRun, params, || {
         let plan = plan_issue(&project, target.kind, &target.dns_provider, &arguments.identifiers)?;
         Ok((plan, Summary::new(arguments.identifiers.len() as u64, plan_summary(&target, &arguments.identifiers))))
-    })
-    .map_err(core_error)?;
+    });
+    // Tuning surface: prints the runtime profile to stderr only when
+    // `OPEN_SSL_PERF=1`, never affecting the product's own output.
+    open_ssl_core::perf::maybe_report_stderr();
+    let plan = plan.map_err(core_error)?;
     value_to_js(&ctx, &plan)
 }
 
@@ -721,8 +724,9 @@ fn acme_issue(ctx: CallContext) -> Result<JsValue> {
         let outcome = issue_with(&project, &arguments, &target, dry_run)?;
         let summary = Summary::new(arguments.identifiers.len() as u64, issue_summary(&target, &arguments.identifiers, &outcome));
         Ok((outcome, summary))
-    })
-    .map_err(core_error)?;
+    });
+    open_ssl_core::perf::maybe_report_stderr();
+    let outcome = outcome.map_err(core_error)?;
     value_to_js(&ctx, &outcome)
 }
 

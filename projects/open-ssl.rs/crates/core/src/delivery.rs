@@ -52,6 +52,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     dns::credentials::ProjectRoot,
     errors::{Error, ErrorCode, Result},
+    perf,
     x509::{Certificate, EcCurve, PublicKey, pem_bundle, pem_decode},
 };
 use data_binary_asn1::DateTime;
@@ -168,22 +169,24 @@ impl Delivery {
     /// 非空 PKCS#8 `PRIVATE KEY`，且证书公钥与私钥 SPKI 一致。任何一项失败都不会留下可见的
     /// 半成品，暂存目录会被删除。
     pub fn stage(&self, bundle: &CertificateBundle) -> Result<Staged> {
-        let generation = validate(bundle)?;
-        let generations = self.generations_dir();
-        fs::create_dir_all(&generations).map_err(|error| io_error(&generations, "创建 generation 目录", error))?;
+        perf::time("delivery.stage", || -> Result<Staged> {
+            let generation = validate(bundle)?;
+            let generations = self.generations_dir();
+            fs::create_dir_all(&generations).map_err(|error| io_error(&generations, "创建 generation 目录", error))?;
 
-        let directory = generations.join(staging_name());
-        fs::create_dir(&directory).map_err(|error| io_error(&directory, "创建暂存目录", error))?;
-        let staged = Staged { directory: Some(directory.clone()), generation };
+            let directory = generations.join(staging_name());
+            fs::create_dir(&directory).map_err(|error| io_error(&directory, "创建暂存目录", error))?;
+            let staged = Staged { directory: Some(directory.clone()), generation };
 
-        write_new_file(&directory.join(CERT_FILE), &bundle.certificate_pem, PUBLIC_MODE)?;
-        write_new_file(&directory.join(CHAIN_FILE), &bundle.chain_pem, PUBLIC_MODE)?;
-        write_new_file(&directory.join(KEY_FILE), &bundle.private_key_pem, PRIVATE_MODE)?;
-        let manifest = Manifest { schema: GENERATION_SCHEMA.to_owned(), generation: staged.generation.clone() };
-        let document =
-            serde_json::to_string(&manifest).map_err(|error| Error::new(ErrorCode::Internal, format!("generation 清单无法序列化：{error}")))?;
-        write_new_file(&directory.join(MANIFEST_FILE), &document, PUBLIC_MODE)?;
-        Ok(staged)
+            write_new_file(&directory.join(CERT_FILE), &bundle.certificate_pem, PUBLIC_MODE)?;
+            write_new_file(&directory.join(CHAIN_FILE), &bundle.chain_pem, PUBLIC_MODE)?;
+            write_new_file(&directory.join(KEY_FILE), &bundle.private_key_pem, PRIVATE_MODE)?;
+            let manifest = Manifest { schema: GENERATION_SCHEMA.to_owned(), generation: staged.generation.clone() };
+            let document = serde_json::to_string(&manifest)
+                .map_err(|error| Error::new(ErrorCode::Internal, format!("generation 清单无法序列化：{error}")))?;
+            write_new_file(&directory.join(MANIFEST_FILE), &document, PUBLIC_MODE)?;
+            Ok(staged)
+        })
     }
 
     /// 把暂存结果切换成当前代。
@@ -191,21 +194,23 @@ impl Delivery {
     /// 先把暂存目录 `rename` 成 `generations/<id>`，再写 `current.tmp` 并 `rename` 覆盖
     /// `current`。第二步失败时会撤销刚放好的那一代，`current` 仍指向上一可用代。
     pub fn commit(&self, mut staged: Staged) -> Result<Generation> {
-        let target = self.generations_dir().join(&staged.generation.id);
-        if target.exists() {
-            return Err(Error::new(ErrorCode::Internal, format!("generation `{}` 已经存在", staged.generation.id)));
-        }
-        let Some(directory) = staged.directory.as_ref()
-        else {
-            return Err(Error::new(ErrorCode::Internal, "暂存结果已经提交过"));
-        };
-        fs::rename(directory, &target).map_err(|error| io_error(&target, "提交 generation 目录", error))?;
-        staged.directory = None;
-        if let Err(error) = self.switch_current(&staged.generation.id) {
-            remove_generation(&target);
-            return Err(error);
-        }
-        Ok(staged.generation.clone())
+        perf::time("delivery.commit", || -> Result<Generation> {
+            let target = self.generations_dir().join(&staged.generation.id);
+            if target.exists() {
+                return Err(Error::new(ErrorCode::Internal, format!("generation `{}` 已经存在", staged.generation.id)));
+            }
+            let Some(directory) = staged.directory.as_ref()
+            else {
+                return Err(Error::new(ErrorCode::Internal, "暂存结果已经提交过"));
+            };
+            fs::rename(directory, &target).map_err(|error| io_error(&target, "提交 generation 目录", error))?;
+            staged.directory = None;
+            if let Err(error) = self.switch_current(&staged.generation.id) {
+                remove_generation(&target);
+                return Err(error);
+            }
+            Ok(staged.generation.clone())
+        })
     }
 
     /// 当前代。

@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 
 use super::{DnsProvider, RecordHandle, TxtRecord, credentials::Secret};
 use crate::errors::{Error, ErrorCode, Result};
+use crate::perf;
 
 /// 项目秘密文件 schema 中使用的 provider id。
 pub const PROVIDER_ID: &str = "cloudflare";
@@ -125,7 +126,7 @@ impl<T: Transport> Cloudflare<T> {
         if let Some(body) = body {
             request = request.with_header("Content-Type", "application/json").with_body(body.to_string().into_bytes());
         }
-        Ok(self.transport.send(&request)?)
+        Ok(perf::time("dns.cloudflare", || self.transport.send(&request))?)
     }
 }
 

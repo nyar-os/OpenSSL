@@ -15,6 +15,7 @@ use super::{
     },
 };
 use crate::errors::{Error, ErrorCode, Result};
+use crate::perf;
 
 /// The replay-nonce response header.
 const NONCE_HEADER: &str = "replay-nonce";
@@ -202,7 +203,7 @@ impl<T: Transport> AcmeClient<T> {
     /// Fetch the directory and adopt the account key before any account exists.
     pub fn bootstrap(transport: T, key: AccountKey, directory_url: &str) -> Result<Self> {
         let url = parse_url(directory_url)?;
-        let response = transport.send(&Request::new(Method::Get, url))?;
+        let response = perf::time("acme.http.directory", || transport.send(&Request::new(Method::Get, url)))?;
         if response.status >= 400 {
             return Err(reject(&response));
         }
@@ -282,7 +283,7 @@ impl<T: Transport> AcmeClient<T> {
         let attempts = attempts.max(1);
         let mut last_status = None;
         for attempt in 0..attempts {
-            let response = self.post_as_get(url)?;
+            let response = perf::time("acme.order.poll", || self.post_as_get(url))?;
             let order = parse_order(url, &response.body)?;
             match order_poll_verdict(order.status) {
                 OrderPollVerdict::Issued => return Ok(order),
@@ -300,10 +301,11 @@ impl<T: Transport> AcmeClient<T> {
             if attempt + 1 < attempts {
                 let wait = retry_after_delay(response.headers.get(RETRY_AFTER_HEADER), unix_now(), delay, delay);
                 if !wait.is_zero() {
-                    std::thread::sleep(wait);
+                    perf::time("acme.order.wait", || std::thread::sleep(wait));
                 }
             }
         }
+        perf::stall("acme.order.poll", "poll-timeout", format!("轮询 {attempts} 次仍未进入终态：{url}"));
         Err(Error::new(ErrorCode::Network, format!("轮询订单 {url} 超时，最后状态为 `{}`", last_status.map_or("unknown", OrderStatus::as_str))))
     }
 
@@ -352,7 +354,7 @@ impl<T: Transport> AcmeClient<T> {
             return Ok(nonce);
         }
         let url = parse_url(&self.directory.new_nonce)?;
-        let response = self.transport.send(&Request::new(Method::Head, url))?;
+        let response = perf::time("acme.http.nonce", || self.transport.send(&Request::new(Method::Head, url)))?;
         response
             .headers
             .get(NONCE_HEADER)
@@ -365,12 +367,13 @@ impl<T: Transport> AcmeClient<T> {
         let mut retried = false;
         loop {
             let nonce = self.refresh_nonce()?;
-            let document = build_jws(&self.key, account, url, &nonce, payload_json)?;
-            let response = self.transport.send(
-                &Request::new(Method::Post, parse_url(url)?)
+            let document = perf::time("acme.jws.sign", || build_jws(&self.key, account, url, &nonce, payload_json))?;
+            let response = perf::time("acme.http.post", || -> Result<Response> {
+                let request = Request::new(Method::Post, parse_url(url)?)
                     .with_header("Content-Type", "application/jose+json")
-                    .with_body(document.into_bytes()),
-            )?;
+                    .with_body(document.clone().into_bytes());
+                Ok(self.transport.send(&request)?)
+            })?;
             if let Some(nonce) = response.headers.get(NONCE_HEADER) {
                 self.nonce = Some(nonce.to_owned());
             }
@@ -378,6 +381,7 @@ impl<T: Transport> AcmeClient<T> {
                 let problem = Problem::parse(response.status, &response.body);
                 if problem.problem_type.as_deref() == Some(BAD_NONCE) && !retried {
                     retried = true;
+                    perf::stall("acme.http.post", "badNonce", format!("服务器要求新 nonce，已重试一次：{url}"));
                     continue;
                 }
                 return Err(reject(&response));

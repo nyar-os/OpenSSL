@@ -39,6 +39,7 @@ wae = { git = "https://github.com/doki-land/wae-framework.git", rev = "ae0db2596
 boost-net = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158", default-features = false, features = ["std"] }
 data-binary-asn1 = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158" }
 boost-random = { git = "https://github.com/oovm/boost.rs", rev = "724adc8c76c8f38ef99b616aab91c23c0469a158" }
+boost-harness = { git = "https://github.com/oovm/rust-boost", rev = "fb2243b70650725ccc391e470c1a5f7cc5ed6964" }
 open-ssl-core = { path = "projects/open-ssl.rs/crates/core", version = "0.0.0" }
 
 [profile.release]

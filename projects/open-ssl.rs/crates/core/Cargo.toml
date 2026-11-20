@@ -16,7 +16,12 @@ serde_json = { workspace = true }
 # through `boost.net::http` and never build their own client.
 boost-net = { workspace = true }
 data-binary-asn1 = { workspace = true }
-# Cryptographic primitives used by the current X.509, CSR, TLS and ACME code.
+# Runtime recorder for continuous tuning: the same `hotspot` core that
+# `database-harness` models as its `runtime` mechanism, used here for the
+# ACME issuance hot path.
+boost-harness = { workspace = true }
+# Cryptographic primitives used by the current X.509, CSR, TLS and HTTP code,
+# plus the family DER writer that backs certificate and CSR encoding.
 sha2 = { workspace = true }
 p256 = { workspace = true }
 p384 = { workspace = true }

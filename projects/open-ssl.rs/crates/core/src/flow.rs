@@ -35,6 +35,7 @@ use crate::{
     errors::{Error, ErrorCode, Result},
     keys,
     lock::ProjectLock,
+    perf,
     state::{
         AccountState, AuthorizationState, DirectoryKind, IssuePlan, OrderPhase, OrderState, PendingAction, StateStore, TxtInstruction,
         plan_issue,
@@ -147,14 +148,16 @@ pub fn issue_api<T: Transport, D: DnsProvider>(
     transport: T,
     dns: &mut D,
 ) -> Result<IssueReport> {
-    let _lock = ProjectLock::acquire(project)?;
-    let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
-    let store = StateStore::new(project);
-    let mut published: Vec<TxtRecord> = Vec::new();
-    let outcome = run_api(project, options, transport, dns, &store, &plan, &mut published);
-    let removed = cleanup(dns, &published);
-    let report = outcome?;
-    Ok(IssueReport { dns_records_removed: removed, ..report })
+    perf::time("acme.issue", || -> Result<IssueReport> {
+        let _lock = ProjectLock::acquire(project)?;
+        let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
+        let store = StateStore::new(project);
+        let mut published: Vec<TxtRecord> = Vec::new();
+        let outcome = run_api(project, options, transport, dns, &store, &plan, &mut published);
+        let removed = cleanup(dns, &published);
+        let report = outcome?;
+        Ok(IssueReport { dns_records_removed: removed, ..report })
+    })
 }
 
 /// 执行一次 manual 路径的运行。
@@ -164,13 +167,15 @@ pub fn issue_api<T: Transport, D: DnsProvider>(
 /// 指纹、阶段与到期，再对同一订单回复挑战、轮询、finalize 并交付；消费成功后动作删除，
 /// 重复续跑会被明确拒绝。
 pub fn issue_manual<T: Transport>(project: &ProjectRoot, options: &FlowOptions<'_>, transport: T, action: Option<&str>) -> Result<FlowOutcome> {
-    let _lock = ProjectLock::acquire(project)?;
-    let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
-    let store = StateStore::new(project);
-    match action {
-        None => prepare_manual(project, options, transport, &store, &plan),
-        Some(id) => resume_manual(project, options, transport, &store, &plan, id).map(FlowOutcome::Report),
-    }
+    perf::time("acme.issue", || -> Result<FlowOutcome> {
+        let _lock = ProjectLock::acquire(project)?;
+        let plan = plan_issue(project, options.kind, options.dns_provider, options.identifiers)?;
+        let store = StateStore::new(project);
+        match action {
+            None => prepare_manual(project, options, transport, &store, &plan),
+            Some(id) => resume_manual(project, options, transport, &store, &plan, id).map(FlowOutcome::Report),
+        }
+    })
 }
 
 /// 建立账户与订单上下文：账户复用/新建、订单复用/新建，返回可继续推进的状态。
